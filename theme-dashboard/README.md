@@ -42,6 +42,10 @@ There is nowhere in the app to enter an API key, and none is required.
 
 ## Quick start
 
+From the repo root, just double-click **`RUN.bat`** (Windows) or run **`./RUN.sh`** (Mac/Linux) — it launches everything below automatically.
+
+To run manually instead:
+
 **Mac/Linux**
 ```bash
 cd theme-dashboard

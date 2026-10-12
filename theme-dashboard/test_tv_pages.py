@@ -8,9 +8,16 @@ import sys
 sys.path.insert(0, "backend")
 import tv_pages
 
-SAMPLE_DIR = os.path.dirname(os.path.abspath(__file__))
-if not os.path.exists(os.path.join(SAMPLE_DIR, "tv_sector.html")):
-    SAMPLE_DIR = os.path.dirname(SAMPLE_DIR)  # samples live one level up
+_HERE = os.path.dirname(os.path.abspath(__file__))
+CANDIDATES = [
+    _HERE,
+    os.path.dirname(_HERE),                        # one level up
+    os.path.join(os.path.dirname(_HERE), "samples"),  # repo-root samples/
+]
+SAMPLE_DIR = next(
+    (d for d in CANDIDATES if os.path.exists(os.path.join(d, "tv_sector.html"))),
+    _HERE,
+)
 
 
 def _load(name):
