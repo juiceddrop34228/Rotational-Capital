@@ -17,7 +17,10 @@ import math
 import os
 from datetime import date, datetime, timedelta
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "themes.db")
+# THEMES_DB_PATH override is used by the Vercel deployment (api/index.py),
+# where only /tmp is writable. Locally this resolves to the same path as before.
+DB_PATH = os.environ.get(
+    "THEMES_DB_PATH", os.path.join(os.path.dirname(__file__), "themes.db"))
 
 # ---------------------------------------------------------------------------
 # Universal filters applied everywhere a stock is ranked or displayed
