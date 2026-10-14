@@ -4,7 +4,7 @@ import time
 import threading
 import functools
 import statistics
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -110,7 +110,7 @@ def _run_sync():
     try:
         report = live_data.sync_all(progress_cb=lambda msg: _sync_state["progress"].append(msg))
     except Exception as e:
-        report = {"ok": False, "error": str(e), "synced_at": datetime.now().isoformat()}
+        report = {"ok": False, "error": str(e), "synced_at": datetime.now(timezone.utc).isoformat()}
     conn = _mk_conn()
     conn.execute(
         "UPDATE sync_status SET mode='live', last_synced=?, report_json=? WHERE id=1",
@@ -501,7 +501,7 @@ def _industry_aggregate(rows):
         "avg_chg_3m": avgf("chg_3m"),
         "avg_chg_6m": avgf("chg_6m"),
         "breadth_20": pct(lambda r: r["above_20d"]),
-        "breadth_50": pct(lambda r: r["above_50d"]),
+        "breadth_50": pct(lambda r: r["above_100ema"] if r.get("above_100ema") is not None else r["above_50d"]),
         "breadth_200": pct(lambda r: r["above_200d"]) if any(
             r.get("above_200d") is not None for r in rows) else None,
         "pct_new_highs": pct(near_high),
@@ -744,8 +744,8 @@ def industry_stocks_by_query(name: str, strategy: str = None):
 def industry_symbol(name: str):
     """TradingView benchmark for charting an industry:
     - kind "etf": a dedicated industry ETF from INDUSTRY_ETF_MAP
-      (exchange-prefixed, NASDAQ: or AMEX: per ETF_EXCHANGE). Never a broad
-      parent-sector ETF.
+      (exchange-prefixed: AMEX: by default, NASDAQ:/CBOE: per ETF_EXCHANGE).
+      Never a broad parent-sector ETF.
     - kind "custom_index": an equal-weight TradingView arithmetic expression
       over the industry's top INDUSTRY_CUSTOM_INDEX_SIZE members by market
       cap (e.g. "AAPL/5+MSFT/5+NVDA/5+AVGO/5+CRM/5").
@@ -757,13 +757,18 @@ def industry_symbol(name: str):
 
 
 # Listing exchange for the benchmark ETFs used in charts. TradingView quotes
-# NYSE Arca ETFs under "AMEX:"; NASDAQ-listed ETFs need "NASDAQ:" (AMEX:SMH
-# does not exist — SMH trades on NASDAQ).
+# NYSE Arca ETFs under "AMEX:"; anything not listed here defaults to AMEX.
+# The overrides below were verified against the TradingView scanner
+# (scanner.tradingview.com/america/scan): the exchange prefix is the FIRST of
+# AMEX -> NASDAQ -> NYSE -> CBOE that returns a live quote whose fund
+# description matches the ETF. Verified 2026-10 (IHF, MOO, SLX, IPAY, IHI
+# resolve under AMEX; SMH/QQQ/PPH under NASDAQ; iShares' IGV/ITA/IYZ only
+# resolve under CBOE).
 ETF_EXCHANGE = {
-    "SMH": "NASDAQ", "SOXX": "NASDAQ", "QQQ": "NASDAQ", "IBB": "NASDAQ",
-    "PPH": "NASDAQ", "MOO": "NASDAQ", "SLX": "NASDAQ", "BJK": "NASDAQ",
-    "CARZ": "NASDAQ", "QCLN": "NASDAQ", "IPAY": "NASDAQ",
-    "IHF": "NASDAQ",
+    "AIRR": "NASDAQ", "CARZ": "NASDAQ", "IBB": "NASDAQ", "PPH": "NASDAQ",
+    "QCLN": "NASDAQ", "QQQ": "NASDAQ", "SMH": "NASDAQ", "SOXX": "NASDAQ",
+    "WOOD": "NASDAQ",
+    "IGV": "CBOE", "ITA": "CBOE", "IYZ": "CBOE",
 }
 
 

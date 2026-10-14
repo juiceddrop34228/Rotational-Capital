@@ -181,8 +181,9 @@ INDUSTRY_ETF_MAP = {
     "Airlines":                       "JETS",  # U.S. Global Jets
     "Marine Shipping":                "SEA",   # Invesco Shipping
     "Specialty Stores":               "XRT",   # SPDR S&P Retail (specialty-retail heavy)
-    "Restaurants":                    "EATZ",  # AdvisorShares Restaurant
-    "Casinos/Gaming":                 "BJK",   # VanEck Gaming
+    # Restaurants / Casinos-Gaming formerly used EATZ and BJK; both funds were
+    # liquidated/relaunched in April 2026, so those industries now fall back
+    # to an equal-weight custom index of their top members.
     "Hotels/Resorts/Cruiselines":     "PEJ",   # Invesco Leisure & Entertainment
     "Hotels/Resorts/Cruise lines":    "PEJ",   # TradingView's exact spelling
     "Movies/Entertainment":           "PEJ",
@@ -321,7 +322,8 @@ def init_db(force=False):
             momentum_20d REAL, days_since_new_high INTEGER, is_new_high_today INTEGER,
             sector_id INTEGER, ema5 REAL, ema10 REAL, ema20 REAL, ema50 REAL, ema200 REAL,
             dist_high_1m REAL, dist_high_3m REAL, ext_ema10 REAL,
-            volatility_d REAL, atr REAL, industry TEXT, recommend_all REAL
+            volatility_d REAL, atr REAL, industry TEXT, recommend_all REAL,
+            above_100ema INTEGER
         );
         CREATE TABLE IF NOT EXISTS sector_snapshot (
             sector_id INTEGER, dt TEXT, price REAL, chg_1d REAL, chg_1w REAL, chg_1m REAL, chg_3m REAL,
@@ -451,6 +453,7 @@ def init_db(force=False):
         "ALTER TABLE stock ADD COLUMN pm_chg REAL",
         "ALTER TABLE stock ADD COLUMN pm_vol REAL",
         "ALTER TABLE stock ADD COLUMN volume_today REAL",
+        "ALTER TABLE stock ADD COLUMN above_100ema INTEGER",
     ):
         try:
             c.execute(stmt)
@@ -504,6 +507,7 @@ def _rand_stock_metrics():
         "above_20d": random.random() > 0.4,
         "above_50d": random.random() > 0.45,
         "above_200d": random.random() > 0.5,
+        "above_100ema": random.random() > 0.45,
         "momentum_20d": round(random.uniform(-25, 35), 2),
         "days_since_new_high": random.randint(0, 90),
         "is_new_high_today": random.random() > 0.88,
@@ -574,8 +578,8 @@ def generate_universe():
                        rs_rating, rs_vs_spy_1m, pct_from_52w_high, pct_from_52w_low, volume_ratio,
                        above_20d, above_50d, above_200d, momentum_20d, days_since_new_high, is_new_high_today, sector_id,
                        ema10, ema20, ema50, ema5, ema200, volatility_d, industry, recommend_all, volatility_w, volatility_m,
-                       open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today, above_100ema)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         stock_ticker, m["market_cap_musd"], m["price"], m["avg_volume"],
                         m["chg_1d"], m["chg_1w"], m["chg_1m"], m["chg_3m"], m["chg_6m"],
@@ -586,7 +590,8 @@ def generate_universe():
                         round(random.uniform(1.5, 9.0), 2), industry, m["recommend_all"],
                         round(random.uniform(1.0, 8.0), 2), round(random.uniform(1.5, 12.0), 2),
                         m["open_price"], m["day_high"], m["day_low"], m["chg_from_open"],
-                        m["gap_pct"], m["pm_chg"], m["pm_vol"], m["volume_today"]
+                        m["gap_pct"], m["pm_chg"], m["pm_vol"], m["volume_today"],
+                        int(m["above_100ema"])
                     ),
                 )
     # A handful of synthetic EP-style movers so the EP section has demo content
@@ -619,8 +624,8 @@ def generate_universe():
                rs_rating, rs_vs_spy_1m, pct_from_52w_high, pct_from_52w_low, volume_ratio,
                above_20d, above_50d, above_200d, momentum_20d, days_since_new_high, is_new_high_today, sector_id,
                ema10, ema20, ema50, ema5, ema200, volatility_d, industry, recommend_all, volatility_w, volatility_m,
-               open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today, adr_pct)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today, adr_pct, above_100ema)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 ep_ticker, m["market_cap_musd"], m["price"], m["avg_volume"],
                 m["chg_1d"], m["chg_1w"], m["chg_1m"], m["chg_3m"], m["chg_6m"],
@@ -632,7 +637,7 @@ def generate_universe():
                 round(random.uniform(1.0, 8.0), 2), vol_m,
                 m["open_price"], m["day_high"], m["day_low"], m["chg_from_open"],
                 m["gap_pct"], m["pm_chg"], m["pm_vol"], m["volume_today"],
-                round(random.uniform(3.0, 6.0), 2)
+                round(random.uniform(3.0, 6.0), 2), int(m["above_100ema"])
             ),
         )
     # Insert benchmark ticker
@@ -653,15 +658,15 @@ def generate_universe():
             """INSERT INTO stock (ticker, market_cap_musd, price, avg_volume, chg_1d, chg_1w, chg_1m, chg_3m, chg_6m,
                rs_rating, rs_vs_spy_1m, pct_from_52w_high, pct_from_52w_low, volume_ratio,
                above_20d, above_50d, above_200d, momentum_20d, days_since_new_high, is_new_high_today, sector_id,
-               ema10, ema20, ema50, ema5, ema200)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ema10, ema20, ema50, ema5, ema200, above_100ema)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 BENCHMARK_TICKER, m["market_cap_musd"], m["price"], m["avg_volume"],
                 m["chg_1d"], m["chg_1w"], m["chg_1m"], m["chg_3m"], m["chg_6m"],
                 50, 0, m["pct_from_52w_high"], m["pct_from_52w_low"],
                 m["volume_ratio"], int(m["above_20d"]), int(m["above_50d"]), int(m["above_200d"]),
                 m["momentum_20d"], m["days_since_new_high"], int(m["is_new_high_today"]), None,
-                m["ema10"], m["ema20"], m["ema50"], m["ema5"], m["ema200"]
+                m["ema10"], m["ema20"], m["ema50"], m["ema5"], m["ema200"], int(m["above_100ema"])
             ),
         )
 
@@ -988,8 +993,8 @@ def industry_leadership_scores(rows, industry_cci=None, sector_cci=None,
 #     recent_mom    : 0.35*RS(1W) pct + 0.65*RS(1M) pct, plus up to +5 bonus
 #                     points when 1W and 1M RS are both positive and improving
 #                     vs the prior industry_snapshot
-#     breadth       : 0.20*(%>20MA) + 0.60*(%>50MA) + 0.20*(%new highs) —
-#                     dominated by % of stocks above the 50MA,
+#     breadth       : 0.20*(%>20MA) + 0.60*(%>100EMA) + 0.20*(%new highs) —
+#                     dominated by % of stocks above the 100 EMA,
 #                     confidence-adjusted by min(1, N/10) for small industries
 #     trend_quality : 100/75/50/25/0 rubric from member EMA alignment
 #                     (ext_ema20/ext_ema50), breadth_200 and the snapshot
@@ -1282,7 +1287,7 @@ def industry_leaderboard_scores(conn, limit=LEAD_LIST_LIMIT, profile=LEAD_PROFIL
     rows = [dict(r) for r in conn.execute(
         """SELECT industry, sector_id, price, ema20, ema50,
                   chg_1w, chg_1m, chg_3m, chg_6m,
-                  above_20d, above_50d, above_200d, volume_ratio,
+                  above_20d, above_50d, above_200d, above_100ema, volume_ratio,
                   dist_high_3m, pct_from_52w_high
            FROM stock
            WHERE ticker != ? AND industry IS NOT NULL AND industry != ''
@@ -1338,7 +1343,7 @@ def industry_leaderboard_scores(conn, limit=LEAD_LIST_LIMIT, profile=LEAD_PROFIL
         ext20 = avg_ext(members, "ema20")
         ext50 = avg_ext(members, "ema50")
         b20 = pct_of(members, lambda m: m.get("above_20d"))
-        b50 = pct_of(members, lambda m: m.get("above_50d"))
+        b50 = pct_of(members, lambda m: (m.get("above_100ema") if m.get("above_100ema") is not None else m.get("above_50d")))
         b200 = (pct_of(members, lambda m: m.get("above_200d"))
                 if any(m.get("above_200d") is not None for m in members) else None)
         hist = history.get(name) or {}
@@ -1569,7 +1574,7 @@ def _generate_demo_industry_extras(conn):
     c = conn.cursor()
     stocks = [dict(r) for r in c.execute(
         """SELECT industry, sector_id, chg_1w, chg_1m, chg_3m, chg_6m,
-                  above_20d, above_50d, above_200d, volume_ratio
+                  above_20d, above_50d, above_200d, above_100ema, volume_ratio
            FROM stock
            WHERE ticker != ? AND industry IS NOT NULL AND industry != ''
              AND market_cap_musd >= ? AND avg_volume >= ?
@@ -1595,7 +1600,7 @@ def _generate_demo_industry_extras(conn):
             "chg_1w": avgf(members, "chg_1w"), "chg_1m": avgf(members, "chg_1m"),
             "chg_3m": avgf(members, "chg_3m"), "chg_6m": avgf(members, "chg_6m"),
             "breadth_20": sum(1 for m in members if m.get("above_20d")) / len(members) * 100,
-            "breadth_50": sum(1 for m in members if m.get("above_50d")) / len(members) * 100,
+            "breadth_50": sum(1 for m in members if (m.get("above_100ema") if m.get("above_100ema") is not None else m.get("above_50d"))) / len(members) * 100,
             "breadth_200": sum(1 for m in members if m.get("above_200d")) / len(members) * 100,
             "vol_ratio": avgf(members, "volume_ratio") or 1.0,
         }
@@ -1763,7 +1768,7 @@ def compute_industry_snapshots(conn, dt, strategy="qullamaggie"):
             "chg_3m": avgf(members, "chg_3m"),
             "chg_6m": avgf(members, "chg_6m"),
             "breadth_20": pct(members, lambda r: r["above_20d"]),
-            "breadth_50": pct(members, lambda r: r["above_50d"]),
+            "breadth_50": pct(members, lambda r: (r["above_100ema"] if r.get("above_100ema") is not None else r["above_50d"])),
             "breadth_200": pct(members, lambda r: r["above_200d"]) if has_200d else None,
             "pct_new_highs": pct(members, near_high),
             "vol_ratio": avgf(members, "volume_ratio"),

@@ -1501,7 +1501,7 @@ function IndustryTable({industries, onSelectIndustry, title, hint, showSector}) 
               <SortTh label="3M" k="chg_3m" sort={sort}/>
               <SortTh label="6M" k="chg_6m" sort={sort}/>
               <SortTh label="&gt;20MA" k="b20" sort={sort} title="% of stocks above 20 SMA"/>
-              <SortTh label="&gt;50MA" k="b50" sort={sort} title="% of stocks above 50 SMA"/>
+              <SortTh label="&gt;100EMA" k="b50" sort={sort} title="% of stocks above 100 EMA"/>
               <SortTh label="NH%" k="nh" sort={sort} title="% within 5% of 1M/3M high"/>
               <SortTh label="Vol x" k="vol" sort={sort}/>
               <SortTh label="vs SPY" k="vs_spy" sort={sort} title="Avg 1M relative strength vs SPY"/>
@@ -1617,7 +1617,7 @@ function LeadingIndustryBanner({industries, onSelectIndustry}) {
           <span className="strongest-name">{top.industry}</span>
           <span className="mono text-faint">{top.stock_count} stocks</span>
         </div>
-        <div className="sum-card-reason">{"3M "+fmtPct1(top.chg_3m)+" · "+(top.breadth_50||0).toFixed(0)+"% above 50MA · "+(top.pct_new_highs||0).toFixed(0)+"% near 3M highs"}</div>
+        <div className="sum-card-reason">{"3M "+fmtPct1(top.chg_3m)+" · "+(top.breadth_50||0).toFixed(0)+"% above 100EMA · "+(top.pct_new_highs||0).toFixed(0)+"% near 3M highs"}</div>
       </div>
       <div className="strongest-stats">
         <div className="metric"><div className="stat-label">3M</div><div className={"stat-value "+pctClass(top.chg_3m)}>{fmtPct(top.chg_3m)}</div></div>
@@ -1673,7 +1673,7 @@ function BreadthTimeline({history}) {
   }
   const series = [
     {label:"Above 20MA", color:"var(--accent)", get: p=>p.breadth_20},
-    {label:"Above 50MA", color:"var(--green)", get: p=>p.breadth_50},
+    {label:"Above 100EMA", color:"var(--green)", get: p=>p.breadth_50},
     {label:"Above 200MA", color:"var(--amber)", get: p=>p.breadth_200},
     {label:"Score", color:"var(--purple)", get: p=>p.score, dashed:true},
   ];
@@ -1743,7 +1743,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
     avg_chg_3m: avg(stocks.map(s=>s.chg_3m||0)),
     avg_chg_6m: avg(stocks.map(s=>s.chg_6m||0)),
     breadth_20: stocks.filter(s=>s.above_20d).length/n*100,
-    breadth_50: stocks.filter(s=>s.above_50d).length/n*100,
+    breadth_50: stocks.filter(s=>(s.above_100ema ?? s.above_50d)).length/n*100,
     pct_new_highs: stocks.filter(s=>((s.dist_high_3m??s.pct_from_52w_high)??-100)>=-5).length/n*100,
     avg_volume_ratio: avg(stocks.map(s=>s.volume_ratio||0)),
     avg_volatility_d: avg(stocks.map(s=>s.volatility_d||0)),
@@ -1802,7 +1802,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
             <div className={"stat-xl "+pctClass(detail && detail.chg_1m!=null ? detail.chg_1m : agg.avg_chg_1m)}>{fmtPct(detail && detail.chg_1m!=null ? detail.chg_1m : agg.avg_chg_1m)}</div>
           </div>
           <div className="metric">
-            <div className="stat-label">Breadth &gt;50MA</div>
+            <div className="stat-label">Breadth &gt;100EMA</div>
             <div className="stat-xl">{agg.breadth_50.toFixed(0)}%</div>
           </div>
         </div>
@@ -1855,7 +1855,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
           <span>Breadth Timeline</span>
           <span className="hint">
             <span className="legend-dot" style={{background:"var(--accent)"}}></span>Above 20MA&nbsp;&nbsp;
-            <span className="legend-dot" style={{background:"var(--green)"}}></span>Above 50MA&nbsp;&nbsp;
+            <span className="legend-dot" style={{background:"var(--green)"}}></span>Above 100EMA&nbsp;&nbsp;
             <span className="legend-dot" style={{background:"var(--amber)"}}></span>Above 200MA&nbsp;&nbsp;
             <span className="legend-dot" style={{background:"var(--purple)"}}></span>Score (dashed)
           </span>
@@ -2005,7 +2005,7 @@ function IndustriesPage({onSelectIndustry, strategy, wl}) {
           {!deltasKnown && <div className="hint" style={{marginTop:4}}>sync to build history</div>}</div>
         <div className="metric-card" title="Leadership score down 3+ points vs the previous snapshot"><div className="stat-label">Weakening</div><div className={"stat-value "+(deltasKnown?"neg":"")}>{deltasKnown?weakening:"—"}</div>
           {!deltasKnown && <div className="hint" style={{marginTop:4}}>sync to build history</div>}</div>
-        <div className="metric-card" title="Average % of constituents above their 50-day moving average"><div className="stat-label">Avg breadth &gt;50MA</div><div className="stat-value">{avgB50==null?"—":avgB50.toFixed(1)+"%"}</div></div>
+        <div className="metric-card" title="Average % of constituents above their 100-day EMA"><div className="stat-label">Avg breadth &gt;100EMA</div><div className="stat-value">{avgB50==null?"—":avgB50.toFixed(1)+"%"}</div></div>
       </div>
 
       <IndustryLeaderboards onSelectIndustry={onSelectIndustry}/>

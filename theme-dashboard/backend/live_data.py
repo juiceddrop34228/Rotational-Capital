@@ -20,7 +20,7 @@ computed from the filtered stock universe in each sector/industry.
 """
 
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import requests
 
@@ -44,7 +44,7 @@ REQUEST_TIMEOUT = 30
 TV_SCAN_URL = "https://scanner.tradingview.com/america/scan"
 TV_COLUMNS = [
     "close", "change", "Perf.W", "Perf.1M", "Perf.3M", "Perf.6M",
-    "SMA20", "SMA50", "SMA200", "EMA5", "EMA10", "EMA20", "EMA50", "EMA200",
+    "SMA20", "SMA50", "SMA200", "EMA5", "EMA10", "EMA20", "EMA50", "EMA100", "EMA200",
     "price_52_week_high", "price_52_week_low",
     "volume", "average_volume_10d_calc", "average_volume_30d_calc", "average_volume_60d_calc",
     "sector", "industry", "market_cap_basic",
@@ -99,6 +99,7 @@ def _tv_row_to_metrics(vals):
     lo_52w = d.get("price_52_week_low")
     sma20, sma50 = d.get("SMA20"), d.get("SMA50")
     ema10 = d.get("EMA10")
+    ema100 = d.get("EMA100")
     ema200 = d.get("EMA200")
     avg_vol30 = d.get("average_volume_30d_calc")
     avg_vol10 = d.get("average_volume_10d_calc")
@@ -127,11 +128,13 @@ def _tv_row_to_metrics(vals):
         "above_20d": bool(close > sma20) if sma20 else False,
         "above_50d": bool(close > sma50) if sma50 else False,
         "above_200d": bool(close > ema200) if ema200 else False,
+        "above_100ema": bool(close > ema100) if ema100 else None,
         "adr_pct": round(float(adr / close * 100), 2) if adr else None,
         "momentum_20d": round(float(d.get("Perf.1M") or 0.0), 2),
         "ema10": round(float(ema10), 2) if ema10 else None,
         "ema20": round(float(d["EMA20"]), 2) if d.get("EMA20") else None,
         "ema50": round(float(d["EMA50"]), 2) if d.get("EMA50") else None,
+        "ema100": round(float(d["EMA100"]), 2) if d.get("EMA100") else None,
         "ema5": round(float(d["EMA5"]), 2) if d.get("EMA5") else None,
         "ema200": round(float(ema200), 2) if ema200 else None,
         "days_since_new_high": 0 if is_new_high_today else 90,
@@ -831,8 +834,8 @@ STOCK_INSERT_SQL = """INSERT OR REPLACE INTO stock (ticker, market_cap_musd, pri
    ema10, ema20, ema50, ema5, ema200, dist_high_1m, dist_high_3m, ext_ema10, volatility_d, atr, industry, recommend_all,
    chg_ytd, chg_1y, recommend_ma, recommend_other, recommend_all_1w, recommend_ma_1w, recommend_other_1w, adr_pct,
    volatility_w, volatility_m,
-   open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today)
-   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+   open_price, day_high, day_low, chg_from_open, gap_pct, pm_chg, pm_vol, volume_today, above_100ema)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
 
 
 def _stock_row(t, m, sector_id):
@@ -851,6 +854,7 @@ def _stock_row(t, m, sector_id):
         m.get("volatility_w"), m.get("volatility_m"),
         m.get("open_price"), m.get("day_high"), m.get("day_low"), m.get("chg_from_open"),
         m.get("gap_pct"), m.get("pm_chg"), m.get("pm_vol"), m.get("volume_today"),
+        int(m["above_100ema"]) if m.get("above_100ema") is not None else None,
     )
 
 
@@ -1004,7 +1008,7 @@ def sync_all(progress_cb=None):
     init_db()  # idempotent: applies schema migrations before we write new columns
     conn = _mk_conn()
     c = conn.cursor()
-    report = {"synced_at": datetime.now().isoformat(), "sectors": {}, "errors": []}
+    report = {"synced_at": datetime.now(timezone.utc).isoformat(), "sectors": {}, "errors": []}
 
     def log(msg):
         if progress_cb:
@@ -1351,9 +1355,10 @@ def sync_all(progress_cb=None):
 # deltas (need >= 2 dates) and the Breadth Timeline (needs many dates) blank.
 # This backfill reconstructs real historical snapshots from ~1 year of daily
 # closes (yfinance) for every stock in the `stock` table: for each trading day
-# in the last ~35 calendar days it recomputes breadth (% above 20/50/200 SMA
-# as of that date), 1W/1M/3M performance and the industry leadership score
-# using the SAME formula as the live path (engine.industry_leadership_scores —
+# in the last ~35 calendar days it recomputes breadth (% above the 20 SMA, the
+# 100 EMA — industry breadth_50 is measured as % above the 100 EMA, not the 50
+# SMA — and the 200 SMA, as of that date), 1W/1M/3M performance and the industry
+# leadership score using the SAME formula as the live path (engine.industry_leadership_scores —
 # 50% 1M + 35% 3M + 15% 1W, min-max normalized; the CCI component falls back
 # to the market default 50 since historical CCI is unavailable). Only
 # industries with >= engine.IND_MIN_STOCKS stocks get rows, matching the live
@@ -1424,7 +1429,7 @@ def backfill_industry_history(progress_cb=None, calendar_days=BACKFILL_CALENDAR_
                 "close": close,
                 "dates": [d.date().isoformat() for d in close.index],
                 "sma20": close.rolling(20).mean(),
-                "sma50": close.rolling(50).mean(),
+                "ema100": close.ewm(span=100, adjust=False).mean(),
                 "sma200": close.rolling(200).mean(),
                 "high63": df["High"].rolling(63).max(),
             }
@@ -1466,7 +1471,7 @@ def backfill_industry_history(progress_cb=None, calendar_days=BACKFILL_CALENDAR_
                 v = f["sma20"].iloc[pos]
                 if not pd.isna(v):
                     b20 += 1 if c > v else 0
-                v = f["sma50"].iloc[pos]
+                v = f["ema100"].iloc[pos]
                 if not pd.isna(v):
                     n_b50 += 1
                     b50 += 1 if c > v else 0

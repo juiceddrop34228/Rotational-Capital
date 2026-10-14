@@ -4299,10 +4299,10 @@ function IndustryTable({
     sort: sort,
     title: "% of stocks above 20 SMA"
   }), /*#__PURE__*/React.createElement(SortTh, {
-    label: ">50MA",
+    label: ">100EMA",
     k: "b50",
     sort: sort,
-    title: "% of stocks above 50 SMA"
+    title: "% of stocks above 100 EMA"
   }), /*#__PURE__*/React.createElement(SortTh, {
     label: "NH%",
     k: "nh",
@@ -4460,7 +4460,7 @@ function LeadingIndustryBanner({
     className: "mono text-faint"
   }, top.stock_count, " stocks")), /*#__PURE__*/React.createElement("div", {
     className: "sum-card-reason"
-  }, "3M " + fmtPct1(top.chg_3m) + " · " + (top.breadth_50 || 0).toFixed(0) + "% above 50MA · " + (top.pct_new_highs || 0).toFixed(0) + "% near 3M highs")), /*#__PURE__*/React.createElement("div", {
+  }, "3M " + fmtPct1(top.chg_3m) + " · " + (top.breadth_50 || 0).toFixed(0) + "% above 100EMA · " + (top.pct_new_highs || 0).toFixed(0) + "% near 3M highs")), /*#__PURE__*/React.createElement("div", {
     className: "strongest-stats"
   }, /*#__PURE__*/React.createElement("div", {
     className: "metric"
@@ -4554,7 +4554,7 @@ function BreadthTimeline({
     color: "var(--accent)",
     get: p => p.breadth_20
   }, {
-    label: "Above 50MA",
+    label: "Above 100EMA",
     color: "var(--green)",
     get: p => p.breadth_50
   }, {
@@ -4664,7 +4664,7 @@ function IndustryDetail({
     avg_chg_3m: avg(stocks.map(s => s.chg_3m || 0)),
     avg_chg_6m: avg(stocks.map(s => s.chg_6m || 0)),
     breadth_20: stocks.filter(s => s.above_20d).length / n * 100,
-    breadth_50: stocks.filter(s => s.above_50d).length / n * 100,
+    breadth_50: stocks.filter(s => s.above_100ema ?? s.above_50d).length / n * 100,
     pct_new_highs: stocks.filter(s => (s.dist_high_3m ?? s.pct_from_52w_high ?? -100) >= -5).length / n * 100,
     avg_volume_ratio: avg(stocks.map(s => s.volume_ratio || 0)),
     avg_volatility_d: avg(stocks.map(s => s.volatility_d || 0)),
@@ -4749,7 +4749,7 @@ function IndustryDetail({
     className: "metric"
   }, /*#__PURE__*/React.createElement("div", {
     className: "stat-label"
-  }, "Breadth >50MA"), /*#__PURE__*/React.createElement("div", {
+  }, "Breadth >100EMA"), /*#__PURE__*/React.createElement("div", {
     className: "stat-xl"
   }, agg.breadth_50.toFixed(0), "%")))), tvSym && tvSym.kind !== "none" && tvSym.symbol && /*#__PURE__*/React.createElement("div", {
     className: "panel"
@@ -4888,7 +4888,7 @@ function IndustryDetail({
     style: {
       background: "var(--green)"
     }
-  }), "Above 50MA\xA0\xA0", /*#__PURE__*/React.createElement("span", {
+  }), "Above 100EMA\xA0\xA0", /*#__PURE__*/React.createElement("span", {
     className: "legend-dot",
     style: {
       background: "var(--amber)"
@@ -5157,10 +5157,10 @@ function IndustriesPage({
     }
   }, "sync to build history")), /*#__PURE__*/React.createElement("div", {
     className: "metric-card",
-    title: "Average % of constituents above their 50-day moving average"
+    title: "Average % of constituents above their 100-day EMA"
   }, /*#__PURE__*/React.createElement("div", {
     className: "stat-label"
-  }, "Avg breadth >50MA"), /*#__PURE__*/React.createElement("div", {
+  }, "Avg breadth >100EMA"), /*#__PURE__*/React.createElement("div", {
     className: "stat-value"
   }, avgB50 == null ? "—" : avgB50.toFixed(1) + "%"))), /*#__PURE__*/React.createElement(IndustryLeaderboards, {
     onSelectIndustry: onSelectIndustry
