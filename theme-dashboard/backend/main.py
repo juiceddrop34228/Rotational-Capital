@@ -16,7 +16,7 @@ import engine
 from engine import _mk_conn, MIN_MARKET_CAP_MUSD, MIN_AVG_VOLUME, MIN_ADR_PCT, MIN_PRICE, SECTOR_DEFS, BENCHMARK_TICKER, CCI_RATING_SCORE
 
 # Universal stock filters applied everywhere a stock is listed or ranked:
-# market cap >= $600M, avg 30d volume >= 1M, ADR >= 3%, price >= $3
+# market cap >= $500M, avg 30d volume >= 1M, ADR >= 2%, price >= $3
 # (adr_pct rows that predate the column pass through so demo data stays
 # usable).
 STOCK_FILTER_SQL = """market_cap_musd >= ? AND avg_volume >= ?
@@ -1000,7 +1000,7 @@ def sector_stocks(sector_id: int, classification: str = None, strategy: str = No
 @app.get("/api/screener")
 def screener(strategy: str = None):
     """Every stock in the universe passing the universal scanner filters
-    (market cap >= $600M, avg 30d volume >= 1M, ADR >= 3%), scored with the
+    (market cap >= $500M, avg 30d volume >= 1M, ADR >= 2%), scored with the
     selected strategy's composite (CCI compulsory) and sorted by it, plus 3M
     and 6M rankings (rank 1 = strongest). The benchmark ticker is excluded."""
     conn = _mk_conn()

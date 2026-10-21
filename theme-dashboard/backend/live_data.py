@@ -3,8 +3,8 @@ live_data.py
 Live market data layer for the sector rotation scanner.
 
 Single data source: the TradingView scanner API (free, no API key).
-A whole-US-market scan (market cap >= $600M, avg 30d volume >= 1M,
-price >= $3, ADR >= 3%) provides every metric used by the app:
+A whole-US-market scan (market cap >= $500M, avg 30d volume >= 1M,
+price >= $3, ADR >= 2%) provides every metric used by the app:
 prices, performance, moving averages, 52w high/low, volume, sector/industry
 classification, ATR and volatility.
 
@@ -185,7 +185,7 @@ def _gap_fallback(close, d):
 
 def fetch_tv_market_scan(progress_cb=None, stats_out=None):
     """Whole-US-market scan: every stock passing the universal filters
-    (market cap >= $600M, avg 30d volume >= 1M, price >= $3, ADR >= 3%),
+    (market cap >= $500M, avg 30d volume >= 1M, price >= $3, ADR >= 2%),
     sorted by ticker name ascending (a stable key — unlike market cap or
     performance, it does not move between page requests during live trading,
     so no stock can silently fall through a page boundary). The ADR filter

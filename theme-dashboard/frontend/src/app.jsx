@@ -2436,9 +2436,9 @@ function ScreenerView({strategy, wl}) {
     <div>
       <h1 className="page-title">Market Screener</h1>
       <div className="filter-pills">
-        <span className="filter-pill">Mkt cap ≥ $600M</span>
+        <span className="filter-pill">Mkt cap ≥ $500M</span>
         <span className="filter-pill">Avg vol (30D) &gt; 1M</span>
-        <span className="filter-pill">ADR ≥ 3%</span>
+        <span className="filter-pill">ADR ≥ 2%</span>
         <span className="filter-pill">{data.count} stocks</span>
       </div>
       <div className="panel">

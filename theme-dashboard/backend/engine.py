@@ -3,8 +3,8 @@ engine.py
 Sector rotation analytics engine.
 
 Sector definitions are represented by a primary ETF and optional secondary ETFs.
-The universal filter (market cap >= $600M, avg 30d volume >= 1M shares,
-ADR >= 3%) is applied everywhere a stock is ranked or displayed.
+The universal filter (market cap >= $500M, avg 30d volume >= 1M shares,
+ADR >= 2%) is applied everywhere a stock is ranked or displayed.
 
 NOTE: this module ships with a deterministic synthetic data generator so the app
 is fully runnable offline.  Swap generate_universe() for live data from
@@ -25,9 +25,9 @@ DB_PATH = os.environ.get(
 # ---------------------------------------------------------------------------
 # Universal filters applied everywhere a stock is ranked or displayed
 # ---------------------------------------------------------------------------
-MIN_MARKET_CAP_MUSD = 600.0     # $600M
+MIN_MARKET_CAP_MUSD = 500.0     # $500M (soft baseline for the EP universe)
 MIN_AVG_VOLUME = 1_000_000      # 1M shares average daily volume (30d)
-MIN_ADR_PCT = 3.0               # average day range >= 3% of price
+MIN_ADR_PCT = 2.0               # average day range >= 2% of price
 MIN_PRICE = 3.0                 # price >= $3
 
 random.seed(42)
@@ -479,7 +479,7 @@ def _rand_stock_metrics():
         random.uniform(80, 400),
     ]), 2)
     mcap = round(random.choice([
-        random.uniform(50, 950),        # sub-$600M -> filtered out
+        random.uniform(50, 950),        # sub-$500M -> filtered out
         random.uniform(1000, 8000),
         random.uniform(8000, 60000),
         random.uniform(60000, 400000),
@@ -826,8 +826,8 @@ def generate_universe():
 # ---------------------------------------------------------------------------
 
 def apply_filters(rows):
-    """Universal filter: market cap >= $600M, avg 30d volume >= 1M,
-    ADR >= 3%, price >= $3 (rows that predate a column pass through so demo
+    """Universal filter: market cap >= $500M, avg 30d volume >= 1M,
+    ADR >= 2%, price >= $3 (rows that predate a column pass through so demo
     data stays usable)."""
     return [
         r for r in rows
@@ -2092,41 +2092,49 @@ def classify_sector_state_strategy(score, breadth, avg_rs, prev_score=None,
 # EP (Episodic Pivot) scanner + Watchlist ranking
 # ---------------------------------------------------------------------------
 
-# EP qualification — hard filters gate confirmed/possible classification only.
-# Bullish EPs only: stocks that went down on earnings are never candidates.
-EP_MIN_MARKET_CAP_MUSD = 500.0      # market cap >= $500M (EP classification only)
-EP_MIN_ADR_PCT = 3.0                # ADR >= 3%
-EP_MIN_CHG_1D = 12.5                # day change >= +12.5%
-EP_MIN_AVG_VOLUME = 1_000_000       # avg 30d volume >= 1M shares
-EP_MIN_REL_VOLUME = 3.0             # explosive volume: >= 3x 10d avg today
+# EP qualification: the scanner is deliberately inclusive — quality is
+# expressed through ranking and classification, not hard rejection. Hard
+# gates: a bullish day, price >= $3, enough volatility to trade (effective
+# ADR >= 2%) and a substantial move vs the stock's own volatility. Market
+# cap ~$0.5B, liquidity and catalyst quality are SOFT: they move the score
+# and the classification, they do not exclude a name from the list.
+EP_MIN_MARKET_CAP_MUSD = 500.0      # soft baseline — below this scores/tags down
+EP_MIN_ADR_PCT = 2.0                # effective ADR >= 2% (fallback: Volatility.D)
+EP_MIN_PRICE = 3.0                  # share price >= $3
+EP_MIN_CHG_1D = 8.0                 # reference "big day" (reasons/KPIs only)
+EP_MIN_AVG_VOLUME = 500_000         # soft liquidity baseline
+EP_MIN_REL_VOLUME = 2.0             # reference rel-volume for confirmed quality
+# Adaptive move bar — a candidate needs ONE of: a meaningful gap up, a large
+# green expansion candle / powerful intraday move, or a heavy-volume range
+# day. "Substantial" scales with the stock's own ADR (floored in %) and the
+# thresholds ease up to 15% on weak market days (see _ep_market_ease).
+EP_GAP_ADR_MULT = 0.8               # gap >= max(EP_GAP_MIN_PCT, 0.8*ADR)
+EP_GAP_MIN_PCT = 3.0
+EP_CANDLE_ADR_MULT = 1.5            # day move >= max(EP_CANDLE_MIN_PCT, 1.5*ADR)
+EP_CANDLE_MIN_PCT = 6.0
+EP_VOL_ASSIST_MIN_RV = 2.5          # heavy-volume assist: chg >= 1x ADR on >= 2.5x rel vol
 # Prior consolidation: the stock was quiet before it exploded. Primary signal
 # is monthly volatility (TradingView Volatility.M, in %): below this threshold
 # the month was tight. Fallback when volatility_m is missing: daily volatility
 # (Volatility.D) below EP_CONSOL_VOL_D_MAX.
-EP_CONSOL_VOL_M_MAX = 5.0
-EP_CONSOL_VOL_D_MAX = 2.5
-
-# Entry bar — the bare minimum to appear in the EP section at all: a bullish
-# stock whose pre-market gain is at least 1.5x its ADR (gap % is used as the
-# fallback when pre-market data is unavailable). No stock meeting this bar is
-# dropped; anything below it is excluded, so 0 EPs on the day is a valid
-# result.
-EP_MIN_GAP_ADR_MULT = 1.5
+EP_CONSOL_VOL_M_MAX = 7.0
+EP_CONSOL_VOL_D_MAX = 3.5
 
 # Live news catalysts: fetched only for the biggest movers (bounded, cached)
-EP_NEWS_MAX_SYMBOLS = 40
+EP_NEWS_MAX_SYMBOLS = 60
 
-# Absolute 100-point score dominated by the bullish factors the user trades:
-# gap-up 35 + volume 30 + gain-from-open/continuation 25 + catalyst 5
-# + structure 3 + risk 2 (+ sector bonus up to +10).
-EP_CTYPE_SCORE = {"earnings": 5, "guidance": 4, "fda": 4, "mna": 4,
-                  "contract": 4, "analyst": 3, "other": 3, "legal": 2,
-                  "macro": 2, "offering": 0}
-EP_SECTOR_BONUS_MAX = 10
-EP_SECTOR_STRONG = 40.0      # sector score >= this earns a bonus
-EP_SECTOR_WEAK = 30.0        # sector score < this: small penalty
-EP_SCORE_CONFIRMED = 70
-EP_SCORE_POSSIBLE = 55
+# Absolute 100-point score. Sector/industry strength is a first-class ranking
+# factor: the sector bonus swings -10..+18 on top of 90 base points.
+#   expansion 25 + volume 20 + continuation 15 + catalyst 10
+#   + structure 15 + risk/liquidity 5 = 90 base  (+ sector bonus)
+EP_CTYPE_SCORE = {"earnings": 10, "guidance": 9, "fda": 9, "mna": 9,
+                  "contract": 8, "analyst": 6, "other": 6, "legal": 4,
+                  "macro": 4, "offering": 0}
+EP_SECTOR_BONUS_MAX = 18
+EP_SECTOR_PENALTY_MAX = -10
+EP_SECTOR_NEUTRAL = 40.0     # combined sector/industry score at which bonus = 0
+EP_SCORE_CONFIRMED = 68
+EP_SCORE_POSSIBLE = 45
 
 # Watchlist ranking formula:
 #   Final = performance*75% + ADR*20% + EMA proximity*5%
@@ -2169,6 +2177,58 @@ def _ep_consolidated(r):
     return False
 
 
+def _ep_effective_adr(r):
+    """The stock's normal daily move in %: ADR when present, else daily
+    volatility, else a 4% default. Drives every adaptive threshold."""
+    adr = r.get("adr_pct")
+    if adr and adr > 0:
+        return float(adr)
+    vd = r.get("volatility_d")
+    if vd and vd > 0:
+        return float(vd)
+    return 4.0
+
+
+def _ep_move_assessment(r, market_ease=1.0):
+    """Adaptive substantial-move test. A candidate needs ONE of:
+      'gap'    — meaningful gap up (pre-market or opening gap vs ADR)
+      'candle' — large green expansion candle / powerful intraday move
+      'volume' — heavy-volume range day (>= 1x ADR on >= 2.5x rel volume)
+    Thresholds scale with the stock's effective ADR (floored) and ease on
+    weak market days. Returns (qualifies, kind, thresholds)."""
+    adr = _ep_effective_adr(r)
+    gap = max(r.get("gap_pct") or 0, r.get("pm_chg") or 0, 0)
+    chg = max(r.get("chg_1d") or 0, 0)
+    cfo = max(r.get("chg_from_open") or 0, 0)
+    thr_gap = max(EP_GAP_MIN_PCT, EP_GAP_ADR_MULT * adr) * market_ease
+    thr_candle = max(EP_CANDLE_MIN_PCT, EP_CANDLE_ADR_MULT * adr) * market_ease
+    thr = {"gap": round(thr_gap, 1), "candle": round(thr_candle, 1),
+           "adr": round(adr, 1)}
+    if gap >= thr_gap:
+        return True, "gap", thr
+    if chg >= thr_candle or cfo >= thr_candle:
+        return True, "candle", thr
+    if (r.get("volume_ratio") or 0) >= EP_VOL_ASSIST_MIN_RV \
+            and chg >= max(4.0, adr) * market_ease:
+        return True, "volume", thr
+    return False, None, thr
+
+
+def _ep_market_ease(conn):
+    """Weak market days make substantial moves rarer and more significant:
+    ease the adaptive thresholds up to 15% when the major indices are red."""
+    try:
+        rows = conn.execute(
+            "SELECT chg_1d FROM index_cci WHERE chg_1d IS NOT NULL").fetchall()
+    except Exception:
+        return 1.0
+    vals = [r["chg_1d"] for r in rows if r["chg_1d"] is not None]
+    if not vals:
+        return 1.0
+    avg = sum(vals) / len(vals)
+    return round(max(0.85, min(1.0, 1.0 + min(avg, 0.0) * 0.10)), 3)
+
+
 def _ep_pct_dist(price, level):
     """Percent distance of price above a level (None-safe)."""
     if price and level:
@@ -2191,99 +2251,124 @@ def _ep_risk_level(r):
 
 
 def _ep_catalyst_points(cat):
-    """0-5: verified catalyst scaled by type quality; unverified 1-2;
-    offering/dilution ~0; unavailable 0. Catalysts are a small confirmation —
-    the score is dominated by gap, volume and from-open strength."""
+    """0-10: verified catalyst scaled by type quality; unverified 2-4;
+    offering/dilution 0; unavailable 0. Catalysts confirm the score — their
+    absence never disqualifies a candidate."""
     if not cat:
         return 0
     status = cat.get("status")
     ctype = cat.get("ctype") or "other"
     if status == "verified":
-        return EP_CTYPE_SCORE.get(ctype, 3)
+        return EP_CTYPE_SCORE.get(ctype, 6)
     if status == "unverified":
         if ctype == "offering":
             return 0
-        return 1 if cat.get("promo") else 2
+        return 2 if cat.get("promo") else 4
     return 0
 
 
 def _ep_expansion_points(r):
-    """0-35: gap-up magnitude vs ADR (up to 25) + day change vs ADR (up to 10).
-    Bigger gap-ups score higher; gap-and-fade is halved."""
-    gap = max(r.get("gap_pct") or 0, 0)
+    """0-25: gap-up magnitude vs ADR (<=13) + day candle / intraday move vs
+    ADR (<=12). Adaptive — what counts as big scales with the stock's own
+    volatility. Gap-and-fade is heavily discounted."""
+    adr = _ep_effective_adr(r)
+    gap = max(r.get("gap_pct") or 0, r.get("pm_chg") or 0, 0)
     chg = max(r.get("chg_1d") or 0, 0)
-    adr = max(r.get("adr_pct") or 0, 1.0)
-    pts = min(25.0, gap / adr * 10.0) + min(10.0, chg / adr * 4.0)
+    cfo = max(r.get("chg_from_open") or 0, 0)
+    candle = max(chg, cfo)
+    pts = min(13.0, gap / adr * 6.5) + min(12.0, candle / adr * 5.0)
     if (r.get("chg_from_open") or 0) < -4:
         pts *= 0.4
-    return round(pts)
+    return round(min(25.0, pts))
 
 
 def _ep_volume_points(r):
-    """0-30: relative volume thresholds (<=22) + dollar-volume tiers (<=8).
-    Higher volume scores higher."""
+    """0-20: relative volume (<=14) + dollar-volume tiers (<=6). Any
+    above-average volume contributes; explosive volume scores highest."""
     vr = r.get("volume_ratio") or 0
-    vr_pts = 22 if vr >= 8 else 18 if vr >= 5 else 15 if vr >= 3 \
-        else 11 if vr >= 2 else 7 if vr >= 1.5 else 0
+    vr_pts = 14 if vr >= 8 else 12 if vr >= 5 else 10 if vr >= 3 \
+        else 8 if vr >= 2 else 5 if vr >= 1.3 else 2 if vr >= 1.0 else 0
     dv = r.get("dollar_vol") or 0
-    dv_pts = 8 if dv >= 100e6 else 6 if dv >= 50e6 else 5 if dv >= 20e6 \
-        else 3 if dv >= 10e6 else 0
-    return min(30, vr_pts + dv_pts)
+    dv_pts = 6 if dv >= 100e6 else 5 if dv >= 50e6 else 4 if dv >= 20e6 \
+        else 2 if dv >= 10e6 else 1 if dv >= 5e6 else 0
+    return min(20, vr_pts + dv_pts)
 
 
 def _ep_structure_points(r):
-    """0-3: tight prior consolidation, near 52w high."""
+    """0-15: consolidation / basing before the move (<=6), constructive
+    position vs ema20 — a base breakout, not a late-stage spike (<=4),
+    proximity to the 52w high (<=2), constructive prior trend (<=3)."""
     pts = 0
     vm, vd = r.get("volatility_m"), r.get("volatility_d")
     if vm is not None:
-        pts += 2 if vm < EP_CONSOL_VOL_M_MAX else 1 if vm < 8 else 0
+        pts += 6 if vm < 5 else 4 if vm < EP_CONSOL_VOL_M_MAX \
+            else 2 if vm < 10 else 0
     elif vd is not None:
-        pts += 2 if vd < EP_CONSOL_VOL_D_MAX else 1 if vd < 4 else 0
+        pts += 6 if vd < 2.5 else 4 if vd < EP_CONSOL_VOL_D_MAX \
+            else 2 if vd < 5 else 0
+    d20 = r.get("dist_ema20")
+    if d20 is not None:
+        pts += 4 if d20 <= 5 else 3 if d20 <= 12 else 1 if d20 <= 20 else 0
     p52 = r.get("pct_from_52w_high")
-    if p52 is not None and p52 >= -10:
+    if p52 is not None:
+        pts += 2 if p52 >= -15 else 1 if p52 >= -30 else 0
+    c1m, c3m = r.get("chg_1m"), r.get("chg_3m")
+    if c1m is not None and c1m > 0:
         pts += 1
-    return min(3, pts)
+        if c1m <= 30:
+            pts += 1      # building energy, not already a repeated spike
+    if c3m is not None and c3m > 0:
+        pts += 1
+    return min(15, pts)
 
 
 def _ep_continuation_points(r):
-    """0-25: how well the stock held up after the open — higher price since
+    """0-15: how well the stock held up after the open — higher price since
     the open and closes near the day high score higher."""
     rp = r.get("range_pos")
     cfo = r.get("chg_from_open")
-    adr = max(r.get("adr_pct") or 0, 1.0)
-    pts = (10 if rp is not None and rp >= 80 else 5 if rp is not None and rp >= 60 else 0)
+    adr = _ep_effective_adr(r)
+    pts = 7 if rp is not None and rp >= 80 else 4 if rp is not None and rp >= 60 \
+        else 2 if rp is not None and rp >= 40 else 0
     if cfo is not None and cfo > 0:
-        pts += 6
+        pts += 3
         # gained at least a full ADR since the open
-        pts += min(9, round(cfo / adr * 9))
-    return min(25, pts)
+        pts += min(5, round(cfo / adr * 5))
+    return min(15, pts)
 
 
 def _ep_risk_points(r):
-    """0-2: price >= $3 plus a reasonable ATR-based stop distance."""
+    """0-5: price >= $3, a reasonable ATR-based stop distance, basic liquidity."""
     price = r.get("price") or 0
     stop = r.get("risk_level")
-    pts = 1 if price >= 3 else 0
-    adr = max(r.get("adr_pct") or 0, 1.0)
+    pts = 2 if price >= EP_MIN_PRICE else 0
+    adr = _ep_effective_adr(r)
     if price and stop:
         stop_pct = (price - stop) / price * 100
-        if stop_pct <= 1.5 * adr:
-            pts += 1
-    return min(2, pts)
+        pts += 2 if stop_pct <= 1.5 * adr else 1 if stop_pct <= 2.5 * adr else 0
+    if (r.get("dollar_vol") or 0) >= 10e6:
+        pts += 1
+    return min(5, pts)
 
 
-def _ep_sector_bonus(sector_score):
-    """Up to +10 for EPs in strong sectors; small penalty in very weak ones."""
-    if sector_score is None:
+def _ep_sector_bonus(sector_score, industry_score=None):
+    """-10..+18: EPs in strong sectors/industries rank much higher; weak or
+    deteriorating ones are down-ranked. Blends the CCI sector score (70%)
+    with the industry leadership score (30%) when both are available."""
+    if sector_score is None and industry_score is None:
         return 0
-    if sector_score >= EP_SECTOR_STRONG:
-        return round(sector_score / 100.0 * EP_SECTOR_BONUS_MAX)
-    if sector_score < EP_SECTOR_WEAK:
-        return -2
-    return 0
+    if sector_score is None:
+        combined = industry_score
+    elif industry_score is None:
+        combined = sector_score
+    else:
+        combined = 0.7 * sector_score + 0.3 * industry_score
+    combined = max(0.0, min(100.0, combined))
+    bonus = round((combined - EP_SECTOR_NEUTRAL) * 0.30)
+    return max(EP_SECTOR_PENALTY_MAX, min(EP_SECTOR_BONUS_MAX, bonus))
 
 
-def _ep_penalties(r, cat):
+def _ep_penalties(r, cat, sector_bonus=0):
     """Human-readable negatives for the candidate."""
     out = []
     status = (cat or {}).get("status")
@@ -2296,6 +2381,8 @@ def _ep_penalties(r, cat):
         out.append("dilution/offering headline")
     if (cat or {}).get("promo"):
         out.append("promotional activity in headline/source")
+    if sector_bonus <= -5:
+        out.append("weak/deteriorating sector (%+d)" % sector_bonus)
     if (r.get("dollar_vol") or 0) < 10e6:
         out.append("low liquidity (dollar volume < $10M)")
     if (r.get("chg_from_open") or 0) < -4:
@@ -2306,8 +2393,8 @@ def _ep_penalties(r, cat):
         out.append("repeated spikes (1W and 1M both > +40%)")
     elif (r.get("volatility_m") or 0) > 12:
         out.append("repeated spikes (high monthly volatility)")
-    if (r.get("price") or 0) < 3:
-        out.append("low price (< $3)")
+    if (r.get("price") or 0) < EP_MIN_PRICE:
+        out.append("low price (< $%g)" % EP_MIN_PRICE)
     if (r.get("market_cap_musd") or 0) < EP_MIN_MARKET_CAP_MUSD:
         out.append("low market cap (< $%gM)" % EP_MIN_MARKET_CAP_MUSD)
     if (r.get("volatility_d") or 0) > 15:
@@ -2318,11 +2405,18 @@ def _ep_penalties(r, cat):
 def _ep_tags(r, cat, sector_bonus):
     """Positive labels for the candidate."""
     out = []
+    kind = r.get("move_kind")
+    if kind == "gap":
+        out.append("gap up")
+    elif kind == "candle":
+        out.append("expansion candle")
+    elif kind == "volume":
+        out.append("heavy volume day")
     if (cat or {}).get("status") == "verified":
         out.append("verified catalyst")
     if (r.get("gap_pct") or 0) >= 4:
         out.append("strong gap")
-    if (r.get("volume_ratio") or 0) >= 3:
+    if (r.get("volume_ratio") or 0) >= EP_MIN_REL_VOLUME:
         out.append("high relative volume")
     if (r.get("dollar_vol") or 0) >= 50e6:
         out.append("high liquidity")
@@ -2331,7 +2425,7 @@ def _ep_tags(r, cat, sector_bonus):
     p52 = r.get("pct_from_52w_high")
     if p52 is not None and p52 >= -10:
         out.append("near 52w high")
-    if sector_bonus >= 6:
+    if sector_bonus >= 8:
         out.append("strong sector")
     if (r.get("range_pos") or 0) >= 80:
         out.append("closes near high")
@@ -2340,54 +2434,66 @@ def _ep_tags(r, cat, sector_bonus):
     return out
 
 
-def _ep_checklist(r, cat):
-    """Pass/caution/fail checklist across the EP dimensions."""
+def _ep_checklist(r, cat, sector_bonus=0):
+    """Pass/caution/fail checklist across the EP dimensions (adaptive bars)."""
     status = (cat or {}).get("status")
     vr = r.get("volume_ratio") or 0
     dv = r.get("dollar_vol") or 0
-    gap = r.get("gap_pct") or 0
+    gap = max(r.get("gap_pct") or 0, r.get("pm_chg") or 0)
     cfo = r.get("chg_from_open") or 0
     rp = r.get("range_pos")
     price = r.get("price") or 0
     stop = r.get("risk_level")
-    adr = max(r.get("adr_pct") or 0, 1.0)
+    adr = _ep_effective_adr(r)
     stop_pct = ((price - stop) / price * 100) if (price and stop) else None
+    move_ok = gap >= max(EP_GAP_MIN_PCT, EP_GAP_ADR_MULT * adr) \
+        or max(r.get("chg_1d") or 0, cfo) >= max(EP_CANDLE_MIN_PCT, EP_CANDLE_ADR_MULT * adr)
     return [
         {"label": "Catalyst",
          "state": "pass" if status == "verified" else "caution" if status == "unverified" else "fail",
          "detail": (cat or {}).get("headline") or "no news found"},
         {"label": "Relative volume",
-         "state": "pass" if vr >= 3 else "caution" if vr >= 2 else "fail",
+         "state": "pass" if vr >= EP_MIN_REL_VOLUME else "caution" if vr >= 1.3 else "fail",
          "detail": "%.1fx vs 10d avg" % vr},
         {"label": "Liquidity",
-         "state": "pass" if dv >= 20e6 else "caution" if dv >= 10e6 else "fail",
+         "state": "pass" if dv >= 15e6 else "caution" if dv >= 5e6 else "fail",
          "detail": "$%.1fM traded" % (dv / 1e6)},
-        {"label": "Gap quality",
-         "state": "pass" if gap >= 4 and cfo >= -2 else "fail" if cfo < -4 else "caution",
-         "detail": "gap %+.1f%%, from open %+.1f%%" % (gap, cfo)},
+        {"label": "Move quality",
+         "state": "pass" if move_ok and cfo >= -2 else "fail" if cfo < -5 else "caution",
+         "detail": "gap %+.1f%%, 1d %+.1f%%, from open %+.1f%% (ADR %.1f%%)"
+                   % (gap, r.get("chg_1d") or 0, cfo, adr)},
         {"label": "Structure",
-         "state": "pass" if r.get("consolidated") else "caution"
-                  if (r.get("dist_ema20") or 0) <= 20 else "fail",
+         "state": "pass" if r.get("consolidated") or (r.get("dist_ema20") or 999) <= 12
+                  else "caution" if (r.get("dist_ema20") or 0) <= 20 else "fail",
          "detail": "Vol.M %s%%, %s%% above ema20" % (r.get("volatility_m"), r.get("dist_ema20"))},
         {"label": "Continuation",
          "state": "pass" if (rp or 0) >= 70 and cfo > 0 else "caution" if cfo >= 0 else "fail",
          "detail": "range pos %s%%, from open %+.1f%%" % (rp, cfo)},
+        {"label": "Sector strength",
+         "state": "pass" if sector_bonus >= 8 else "caution" if sector_bonus >= 0 else "fail",
+         "detail": "sector/industry bonus %+d" % sector_bonus},
         {"label": "Risk",
-         "state": "pass" if price >= 3 and stop_pct is not None and stop_pct <= 1.5 * adr
-                  else "caution" if price >= 3 else "fail",
+         "state": "pass" if price >= EP_MIN_PRICE and stop_pct is not None and stop_pct <= 1.5 * adr
+                  else "caution" if price >= EP_MIN_PRICE else "fail",
          "detail": "stop $%s (%.1f%% below price)" % (stop, stop_pct or 0)},
     ]
 
 
 def _ep_classify(r, cat, score):
-    """classification, confidence, missing[], reject_reason for a candidate."""
+    """classification, confidence, missing[], reject_reason for a candidate.
+
+    Buckets (preserved): Confirmed EP (textbook: verified catalyst + volume +
+    high score), Possible EP (strong score, imperfect confirmations), News
+    Spike (speculative: offering/promo/thin unverified news), Momentum Mover
+    (substantial move with no verified news). Only an outright gap-and-fade
+    disaster is rejected — the move bar already guarantees a real move."""
     status = (cat or {}).get("status")
     ctype = (cat or {}).get("ctype")
     promo = bool((cat or {}).get("promo"))
     vr = r.get("volume_ratio") or 0
     dv = r.get("dollar_vol") or 0
     mc = r.get("market_cap_musd") or 0
-    chg = r.get("chg_1d") or 0
+    cfo = r.get("chg_from_open") or 0
 
     missing = []
     if status != "verified":
@@ -2401,43 +2507,42 @@ def _ep_classify(r, cat, score):
     if score < EP_SCORE_CONFIRMED:
         missing.append("ep_score >= %g" % EP_SCORE_CONFIRMED)
 
-    if status == "verified" and vr >= EP_MIN_REL_VOLUME and dv >= 20e6 \
-            and mc >= EP_MIN_MARKET_CAP_MUSD and score >= EP_SCORE_CONFIRMED:
+    if status == "verified" and vr >= EP_MIN_REL_VOLUME and dv >= 15e6 \
+            and score >= EP_SCORE_CONFIRMED:
         cls = "confirmed"
-    elif ctype == "offering" or promo or (status == "unverified" and dv < 10e6):
+    elif ctype == "offering" or promo:
         cls = "speculative"
-    elif score >= EP_SCORE_POSSIBLE and status in ("verified", "unverified") and vr >= 2:
+    elif cfo < -6:
+        # gap-and-fade: never an EP candidate no matter how good the rest looks
+        cls = "momentum" if score >= EP_SCORE_POSSIBLE else "rejected"
+    elif score >= EP_SCORE_POSSIBLE \
+            and (status in ("verified", "unverified") or score >= 55):
         cls = "possible"
     elif status == "unverified":
         cls = "speculative"
-    elif chg >= EP_MIN_CHG_1D and vr >= 2 and status == "unavailable":
-        cls = "momentum"
-    elif dv < 10e6 and vr >= 2:
-        cls = "speculative"
     else:
-        cls = "rejected"
+        cls = "momentum"
 
     n_missing = len(missing)
-    if cls == "confirmed" and n_missing == 0:
+    if cls == "confirmed" and n_missing <= 1:
         confidence = "high"
-    elif cls in ("confirmed", "possible") and n_missing <= 2:
+    elif cls in ("confirmed", "possible") and n_missing <= 3:
         confidence = "medium"
-    elif cls in ("momentum", "possible"):
+    elif cls == "momentum" and score >= EP_SCORE_POSSIBLE:
         confidence = "medium"
     else:
         confidence = "low"
 
     reject_reason = None
     if cls == "rejected":
-        if missing:
-            reject_reason = "missing: " + ", ".join(missing[:2])
-        else:
-            reject_reason = "score %g below threshold with no strong confirmations" % score
+        reject_reason = "gap-and-fade (%.1f%% from open) with weak confirmations (score %g)" \
+                        % (cfo, score)
     return cls, confidence, missing, reject_reason
 
 
-def _ep_finalize(r, sector_score=None):
-    """Score + classify one EP candidate row in place (absolute 100-pt system)."""
+def _ep_finalize(r, sector_score=None, industry_score=None):
+    """Score + classify one EP candidate row in place (absolute 100-pt system
+    plus the -10..+18 sector/industry bonus)."""
     r["consolidated"] = _ep_consolidated(r)
     r["risk_level"] = _ep_risk_level(r)
     r["dist_ema20"] = _ep_pct_dist(r.get("price"), r.get("ema20"))
@@ -2451,22 +2556,35 @@ def _ep_finalize(r, sector_score=None):
         "continuation": _ep_continuation_points(r),
         "risk": _ep_risk_points(r),
     }
-    bonus = _ep_sector_bonus(sector_score)
+    bonus = _ep_sector_bonus(sector_score, industry_score)
     r["score_parts"] = parts
     r["sector_bonus"] = bonus
     r["ep_score"] = max(0, min(100, sum(parts.values()) + bonus))
-    r["penalties"] = _ep_penalties(r, cat)
+    r["penalties"] = _ep_penalties(r, cat, bonus)
     r["tags"] = _ep_tags(r, cat, bonus)
     cls, conf, missing, reject = _ep_classify(r, cat, r["ep_score"])
     r["classification"] = cls
     r["confidence"] = conf
     r["missing"] = missing
     r["reject_reason"] = reject
-    r["checklist"] = _ep_checklist(r, cat)
+    r["checklist"] = _ep_checklist(r, cat, bonus)
     r["trend"] = {"chg_1w": r.get("chg_1w"), "chg_1m": r.get("chg_1m"),
                   "chg_3m": r.get("chg_3m"), "chg_6m": r.get("chg_6m"),
                   "ytd": r.get("chg_ytd")}
     reasons = []
+    thr = r.get("move_thresholds") or {}
+    kind = r.get("move_kind")
+    gap_move = max(r.get("gap_pct") or 0, r.get("pm_chg") or 0)
+    if kind == "gap":
+        reasons.append("gap up %+.1f%% (adaptive bar %.1f%% vs %.1f%% ADR)"
+                       % (gap_move, thr.get("gap", 0), thr.get("adr", 0)))
+    elif kind == "candle":
+        reasons.append("expansion candle %+.1f%% (adaptive bar %.1f%% vs %.1f%% ADR)"
+                       % (max(r.get("chg_1d") or 0, r.get("chg_from_open") or 0),
+                          thr.get("candle", 0), thr.get("adr", 0)))
+    elif kind == "volume":
+        reasons.append("heavy-volume range day %+.1f%% on %.1fx rel volume"
+                       % (r.get("chg_1d") or 0, r.get("volume_ratio") or 0))
     if cat and cat.get("status") == "verified":
         reasons.append("verified catalyst (%s): %s" % (cat.get("ctype"), cat.get("headline")))
     if (r.get("volume_ratio") or 0) >= EP_MIN_REL_VOLUME:
@@ -2476,7 +2594,9 @@ def _ep_finalize(r, sector_score=None):
     if r["consolidated"]:
         reasons.append("tight prior consolidation")
     if bonus > 0:
-        reasons.append("strong sector (bonus +%g)" % bonus)
+        reasons.append("strong sector/industry (bonus %+g)" % bonus)
+    elif bonus <= -5:
+        reasons.append("weak sector/industry (penalty %+g)" % bonus)
     if not reasons:
         reasons.append("unusual activity (score %g/100)" % r["ep_score"])
     r["reasons"] = reasons
@@ -2499,12 +2619,18 @@ def _ep_unavailable_catalyst():
 
 
 def ep_scan(conn):
-    """EP scanner: bullish EPs only. A stock qualifies when its pre-market
-    gain is at least 1.5x its ADR (gap % is the fallback when pre-market data
-    is unavailable) and it is up on the day — down-movers never appear.
-    Every stock meeting the bar is scored (gap / volume / from-open dominate)
-    and ranked by ep_score desc; when nothing meets the bar the section
-    correctly shows 0 EPs for the day.
+    """EP scanner: broad admission, rank-don't-reject. Universe = US-listed
+    stocks & ETFs (NYSE/NASDAQ/AMEX, enforced by the live scan) priced >= $3
+    with effective ADR >= 2%, up on the day, showing a substantial move —
+    a meaningful gap up, a large green expansion candle / powerful intraday
+    move, or a heavy-volume range day. "Substantial" is adaptive: thresholds
+    scale with each stock's own ADR and ease up to 15% on weak market days.
+
+    Everything meeting the bar is scored (expansion / volume / continuation /
+    catalyst / structure + a -10..+18 sector/industry bonus) and ranked by
+    ep_score desc. Market cap ~$0.5B, liquidity and catalyst quality shape
+    the score and the Confirmed/Possible/Momentum/News-Spike classification
+    instead of hard-excluding names, so active days yield a healthy watchlist.
 
     Returns {"candidates": [...], "sectors": [...], "generated_at": ...}."""
     rows = conn.execute(
@@ -2513,16 +2639,21 @@ def ep_scan(conn):
            WHERE s.price IS NOT NULL AND s.chg_1d > 0""",
     ).fetchall()
 
-    def meets_ep_bar(r):
-        adr = r["adr_pct"]
-        if not adr or adr <= 0:
-            return False
-        pm = r["pm_chg"] if r["pm_chg"] is not None else r["gap_pct"]
-        return pm is not None and pm >= EP_MIN_GAP_ADR_MULT * adr
-
-    cands = [dict(r) for r in rows if meets_ep_bar(r)]
-    for r in cands:
-        _ep_derive(r)
+    ease = _ep_market_ease(conn)
+    cands = []
+    for row in rows:
+        d = dict(row)
+        if (d.get("price") or 0) < EP_MIN_PRICE:
+            continue
+        if _ep_effective_adr(d) < EP_MIN_ADR_PCT:
+            continue
+        ok, kind, thr = _ep_move_assessment(d, ease)
+        if not ok:
+            continue
+        d["move_kind"] = kind
+        d["move_thresholds"] = thr
+        _ep_derive(d)
+        cands.append(d)
 
     # Canonical CCI-based sector scores (50% performance 15/50/35 across
     # 1W/1M/3M + 50% sector-ETF CCI) — drives the sector bonus.
@@ -2539,9 +2670,20 @@ def ep_scan(conn):
     colors = {r["id"]: r["color"] for r in conn.execute("SELECT id, color FROM sector")}
     avg_chg = {s["sector_id"]: s["chg_1d"] for s in snaps}
 
+    # Industry leadership scores (0-100) from the latest industry snapshot —
+    # blended 30/70 with the sector score inside the sector bonus.
+    try:
+        ind_scores = {r["industry"]: r["leadership_score"] for r in conn.execute(
+            """SELECT industry, leadership_score FROM industry_snapshot
+               WHERE dt = (SELECT MAX(dt) FROM industry_snapshot)
+               AND leadership_score IS NOT NULL""")}
+    except Exception:
+        ind_scores = {}
+
     # Live news catalysts for the biggest movers only (bounded thread pool,
     # ~10-min in-memory cache inside live_data).
-    top = sorted(cands, key=lambda r: -abs(r.get("chg_1d") or 0))[:EP_NEWS_MAX_SYMBOLS]
+    top = sorted(cands, key=lambda r: -(max(r.get("gap_pct") or 0, r.get("pm_chg") or 0)
+                                        + abs(r.get("chg_1d") or 0)))[:EP_NEWS_MAX_SYMBOLS]
     news = {}
     if top:
         try:
@@ -2553,7 +2695,8 @@ def ep_scan(conn):
     for r in cands:
         cat = news.get(r["ticker"]) or _ep_unavailable_catalyst()
         r["catalyst"] = cat
-        _ep_finalize(r, scores.get(r.get("sector_id")))
+        _ep_finalize(r, scores.get(r.get("sector_id")),
+                     ind_scores.get(r.get("industry")))
 
     cands.sort(key=lambda r: (-r["ep_score"], r.get("ticker") or ""))
     for i, r in enumerate(cands):
@@ -2580,16 +2723,24 @@ def ep_scan(conn):
         "candidates": cands,
         "sectors": leading,
         "criteria": {
-            "min_market_cap_musd": EP_MIN_MARKET_CAP_MUSD,
+            "universe": "US-listed stocks & ETFs (NYSE/NASDAQ/AMEX)",
+            "min_price": EP_MIN_PRICE,
             "min_adr_pct": EP_MIN_ADR_PCT,
-            "min_chg_1d": EP_MIN_CHG_1D,
-            "min_avg_volume": EP_MIN_AVG_VOLUME,
-            "min_rel_volume": EP_MIN_REL_VOLUME,
+            "min_market_cap_musd_soft": EP_MIN_MARKET_CAP_MUSD,
+            "min_avg_volume_soft": EP_MIN_AVG_VOLUME,
+            "min_rel_volume_quality": EP_MIN_REL_VOLUME,
+            "adaptive_move_bar": {
+                "gap": "gap >= max(%g%%, %gx ADR)" % (EP_GAP_MIN_PCT, EP_GAP_ADR_MULT),
+                "candle": "day move >= max(%g%%, %gx ADR)" % (EP_CANDLE_MIN_PCT, EP_CANDLE_ADR_MULT),
+                "vol_assist": "chg >= 1x ADR on >= %gx rel volume" % EP_VOL_ASSIST_MIN_RV,
+                "market_ease": ease,
+            },
             "consolidation_vol_m_max": EP_CONSOL_VOL_M_MAX,
-            "min_gap_adr_mult": EP_MIN_GAP_ADR_MULT,
-            "score_parts": {"expansion": 35, "volume": 30, "continuation": 25,
-                            "catalyst": 5, "structure": 3, "risk": 2,
-                            "sector_bonus": EP_SECTOR_BONUS_MAX},
+            "score_parts": {"expansion": 25, "volume": 20, "continuation": 15,
+                            "catalyst": 10, "structure": 15, "risk": 5,
+                            "sector_bonus": "%d..+%d" % (EP_SECTOR_PENALTY_MAX, EP_SECTOR_BONUS_MAX)},
+            "score_confirmed": EP_SCORE_CONFIRMED,
+            "score_possible": EP_SCORE_POSSIBLE,
         },
         "generated_at": datetime.now().isoformat(),
     }
@@ -2758,11 +2909,13 @@ def ep_dashboard(conn):
     possible = n_where(lambda c: c["classification"] == "possible")
     verified = n_where(lambda c: (c.get("catalyst") or {}).get("status") == "verified")
     def _basic(c):
+        # Core quality bar (soft criteria shown in the funnel — not gates):
+        # ~$0.5B cap, ADR >= 2%, price >= $3, $10M+ traded, rel vol >= 1.5x.
         return ((c.get("market_cap_musd") or 0) >= EP_MIN_MARKET_CAP_MUSD
                 and (c.get("adr_pct") or 0) >= EP_MIN_ADR_PCT
-                and (c.get("avg_volume") or 0) >= EP_MIN_AVG_VOLUME
-                and (c.get("dollar_vol") or 0) >= 20e6
-                and (c.get("volume_ratio") or 0) >= EP_MIN_REL_VOLUME)
+                and (c.get("price") or 0) >= EP_MIN_PRICE
+                and (c.get("dollar_vol") or 0) >= 10e6
+                and (c.get("volume_ratio") or 0) >= 1.5)
 
     passed_basic = n_where(_basic)
     verified_basic = n_where(
@@ -2781,16 +2934,15 @@ def ep_dashboard(conn):
     base["kpis"] = {
         "confirmed": confirmed,
         "high_quality_catalyst": verified,
-        "strong_volume": n_where(lambda c: (c.get("volume_ratio") or 0) >= 3),
-        "expansion": n_where(lambda c: (c.get("gap_pct") or 0) >= 4
-                             or (c.get("chg_1d") or 0) >= 15),
+        "strong_volume": n_where(lambda c: (c.get("volume_ratio") or 0) >= EP_MIN_REL_VOLUME),
+        "expansion": n_where(lambda c: c.get("move_kind") in ("gap", "candle")),
         "watchlist": confirmed + possible,
         "rejected": n_where(lambda c: c["classification"] == "rejected"),
     }
     base["funnel"] = [
         {"key": "universe", "label": "Universe", "count": len(rows)},
         {"key": "movers", "label": "Movers scanned", "count": len(cands)},
-        {"key": "basic", "label": "Passed basic filters", "count": passed_basic},
+        {"key": "basic", "label": "Core quality bar", "count": passed_basic},
         {"key": "catalyst", "label": "Verified catalyst", "count": verified_basic},
         {"key": "confirmed", "label": "Confirmed EP", "count": confirmed},
     ]

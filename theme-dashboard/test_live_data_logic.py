@@ -92,15 +92,15 @@ def test_score_and_rank_swing():
 
 
 def test_universal_filters():
-    print("test_universal_filters (mcap >= $600M, avg vol >= 1M, ADR >= 3%, price >= $3)...", end=" ")
+    print("test_universal_filters (mcap >= $500M, avg vol >= 1M, ADR >= 2%, price >= $3)...", end=" ")
     import engine
-    assert engine.MIN_MARKET_CAP_MUSD == 600.0
+    assert engine.MIN_MARKET_CAP_MUSD == 500.0
     assert engine.MIN_PRICE == 3.0
     ok = {"market_cap_musd": 800, "avg_volume": 2_000_000, "price": 50.0,
           "above_200d": 0, "adr_pct": 4.0}
-    small_cap = dict(ok, market_cap_musd=599.9)
+    small_cap = dict(ok, market_cap_musd=499.9)
     low_vol = dict(ok, avg_volume=999_999)
-    low_adr = dict(ok, adr_pct=2.9)
+    low_adr = dict(ok, adr_pct=1.9)
     low_price = dict(ok, price=2.99)
     legacy_no_adr = dict(ok, adr_pct=None)
     kept, excluded = engine.score_and_rank(
@@ -153,12 +153,12 @@ def test_cap_weighted_average():
 
 def test_market_scan_filter_accounting():
     print("test_market_scan_filter_accounting...", end=" ")
-    # Fake a two-stock scanner universe: one passes ADR >= 3%, one fails it.
+    # Fake a two-stock scanner universe: one passes ADR >= 2%, one fails it.
     pages = [
         {"totalCount": 3, "data": [
             {"s": "NASDAQ:KEEP", "d": _fake_tv_row(ADR=2.0)},          # 2/50 = 4% -> kept
-            {"s": "NYSE:DROP", "d": _fake_tv_row(ADR=1.0)},           # 2% -> dropped (ADR)
-            {"s": "NYSE:DROP", "d": _fake_tv_row(ADR=1.0)},           # duplicate row
+            {"s": "NYSE:DROP", "d": _fake_tv_row(ADR=0.5)},           # 1% -> dropped (ADR)
+            {"s": "NYSE:DROP", "d": _fake_tv_row(ADR=0.5)},           # duplicate row
         ]},
         {"totalCount": 3, "data": []},
     ]
