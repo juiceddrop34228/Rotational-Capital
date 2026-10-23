@@ -937,14 +937,17 @@ tr.ep-row-consol td{background:rgba(255,159,67,0.06);}
 .scr-bar-grid{display:grid;grid-template-columns:1fr 2.4fr 1fr;gap:16px;min-width:0;margin-bottom:16px;}
 .scr-duo-grid{display:grid;grid-template-columns:1fr 1.7fr;gap:16px;min-width:0;margin-bottom:16px;}
 .scr-rrg-grid>.panel,.scr-bar-grid>.panel,.scr-duo-grid>.panel{margin-bottom:0;}
-.scr-stack{display:flex;flex-direction:column;gap:16px;min-width:0;}
+.scr-stack{display:flex;flex-direction:column;gap:16px;min-width:0;height:100%;}
 .scr-stack>.panel{margin-bottom:0;}
 .scr-stack>.panel.scr-grow{flex:1;}
 @media(max-width:1200px){.scr-rrg-grid,.scr-bar-grid,.scr-duo-grid{grid-template-columns:1fr;}}
 .scr-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:14px 12px;}
+.scr-info.scr-grow{display:flex;flex-direction:column;}
 .scr-info .stat-value{font-size:17px;}
+.scr-callout-wrap{flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;}
 .scr-callout{font-size:15px;font-weight:700;margin:3px 0 6px;overflow:hidden;text-overflow:ellipsis;}
 .scr-callout-sub{font-size:11.5px;color:var(--text-dim);line-height:1.5;}
+.scr-callout-detail{margin-top:7px;padding-top:7px;border-top:1px solid var(--border);font-family:var(--mono);font-size:10.5px;color:var(--text-faint);line-height:1.5;white-space:pre-line;}
 .scr-leader-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);min-width:0;}
 .scr-leader-row:last-child{border-bottom:none;}
 .scr-leader-row .lbl{font-size:10px;color:var(--text-faint);font-family:var(--mono);width:32px;flex-shrink:0;}
@@ -1747,14 +1750,13 @@ function withStockScores(stocks, adrWeight = 0) {
 }
 
 // ---------------------------------------------------------------------------
-// Screener momentum model — composite score computed purely from the screener
-// dataset: heavily weighted short-to-medium-term performance (15% 1W + 35% 1M
-// + 25% 3M) blended with average daily range (15% ADR) and price extension
-// relative to the 10 EMA (10%). Every input is min-max normalized to 0-100
-// across the screened universe before blending. Used only by the Screener
-// section (other views keep the plain performance score above).
+// Screener momentum model — 90% returns (8% 1W + 40% 1M + 40% 3M + 2% 6M)
+// with 10% split between average daily range and 10-EMA extension. Returns and
+// extension are min-max normalized; ADR uses an absolute scale that reaches 100
+// at 5%. Used only by the Screener section (other views keep the plain
+// performance score above).
 // ---------------------------------------------------------------------------
-const MOM_WEIGHTS = [["1W", s => s.chg_1w, 0.15], ["1M", s => s.chg_1m, 0.35], ["3M", s => s.chg_3m, 0.25], ["ADR", s => s.adr_pct, 0.15], ["EXT", s => extVsEma10(s), 0.10]];
+const MOM_WEIGHTS = [["1W", s => s.chg_1w, 0.08], ["1M", s => s.chg_1m, 0.40], ["3M", s => s.chg_3m, 0.40], ["6M", s => s.chg_6m, 0.02], ["ADR", s => s.adr_pct, 0.07, _adrScoreVals], ["EXT", s => extVsEma10(s), 0.03]];
 function extVsEma10(s) {
   if (s.ext_ema10 != null) return s.ext_ema10;
   if (s.price != null && s.ema10) return (s.price / s.ema10 - 1) * 100;
@@ -1768,9 +1770,17 @@ function _normVals(vals) {
     span = Math.max(...known) - mn || 1;
   return vals.map(v => ((v == null || isNaN(v) ? fill : v) - mn) / span * 100);
 }
+function _adrScoreVals(vals) {
+  const known = vals.filter(v => v != null && !isNaN(v));
+  const fill = known.length ? avg(known) : null;
+  return vals.map(v => {
+    const adr = v == null || isNaN(v) ? fill : v;
+    return adr == null ? null : Math.max(0, Math.min(100, adr / 5 * 100));
+  });
+}
 function withMomentumScores(stocks) {
   if (!stocks || !stocks.length) return stocks || [];
-  const cols = MOM_WEIGHTS.map(([, get]) => _normVals(stocks.map(get)));
+  const cols = MOM_WEIGHTS.map(([, get,, norm = _normVals]) => norm(stocks.map(get)));
   return stocks.map((s, i) => {
     let acc = 0,
       wsum = 0;
@@ -2008,7 +2018,8 @@ function RRGDots({
   midX,
   midY,
   labels,
-  onSelect
+  onSelect,
+  compact
 }) {
   const [hover, setHover] = useState(null); // index into rows
   if (!rows || rows.length === 0) return /*#__PURE__*/React.createElement("div", {
@@ -2021,7 +2032,7 @@ function RRGDots({
     br: "WEAKENING"
   };
   const w = 560,
-    h = 420,
+    h = compact ? 340 : 420,
     pad = 30;
   const sectors = [...new Set(rows.map(r => r.sector || "Other"))].sort();
   const colorOf = s => SECTOR_PALETTE[sectors.indexOf(s || "Other") % SECTOR_PALETTE.length];
@@ -5919,9 +5930,12 @@ function ScrCallout({
   label,
   name,
   sub,
+  detail,
   color
 }) {
-  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/React.createElement("div", {
+    className: "scr-callout-wrap"
+  }, /*#__PURE__*/React.createElement("div", {
     className: "stat-label"
   }, label), /*#__PURE__*/React.createElement("div", {
     className: "scr-callout",
@@ -5930,7 +5944,9 @@ function ScrCallout({
     } : undefined
   }, name), sub && /*#__PURE__*/React.createElement("div", {
     className: "scr-callout-sub"
-  }, sub));
+  }, sub), detail && /*#__PURE__*/React.createElement("div", {
+    className: "scr-callout-detail"
+  }, detail));
 }
 
 // Gamified top-performer podium: top 3 by composite momentum score.
@@ -6162,7 +6178,8 @@ function ScreenerDashboard({
   }, "x: avg RS rating (mid 50) · y: 1W momentum vs 1M pace · industries with ≥2 screened stocks · hover a dot")), /*#__PURE__*/React.createElement(RRGDots, {
     rows: rrgRows,
     midX: 50,
-    midY: 0
+    midY: 0,
+    compact: true
   })), /*#__PURE__*/React.createElement("div", {
     className: "scr-stack"
   }, /*#__PURE__*/React.createElement(ScrInfo, {
@@ -6172,7 +6189,8 @@ function ScreenerDashboard({
     label: "RS > 50 & accelerating",
     name: leading.length + " industries",
     color: "var(--green)",
-    sub: leadingTop ? "Strongest: " + leadingTop.industry + " — avg score " + leadingTop.avgScore.toFixed(0) + " · " + leadingTop.over50 + "/" + leadingTop.count + " members score > 50" : "No industry is leading right now"
+    sub: leadingTop ? "Strongest: " + leadingTop.industry + " — avg score " + leadingTop.avgScore.toFixed(0) + " · " + leadingTop.over50 + "/" + leadingTop.count + " members score > 50" : "No industry is leading right now",
+    detail: rrgRows.length ? Math.round(leading.length / rrgRows.length * 100) + "% of mapped industries are in the leading quadrant" : "Waiting for rotation data"
   })), /*#__PURE__*/React.createElement(ScrInfo, {
     title: "Dominant Cluster",
     grow: true
@@ -6180,7 +6198,8 @@ function ScreenerDashboard({
     label: "Most members scoring > 50",
     name: dominant ? dominant.industry : "—",
     color: "var(--accent)",
-    sub: dominant ? dominant.over50 + " of " + dominant.count + " members above 50 · avg score " + dominant.avgScore.toFixed(0) + " · top: " + (dominant.top ? dominant.top.ticker : "—") : ""
+    sub: dominant ? dominant.over50 + " of " + dominant.count + " members above 50 · avg score " + dominant.avgScore.toFixed(0) + " · top: " + (dominant.top ? dominant.top.ticker : "—") : "",
+    detail: dominant ? dominant.sector + " · 1W " + fmtPct1(dominant.chg_1w) + " · 1M " + fmtPct1(dominant.chg_1m) + " · 3M " + fmtPct1(dominant.chg_3m) : ""
   })), /*#__PURE__*/React.createElement(ScrInfo, {
     title: "Hottest Industry",
     grow: true
@@ -6188,7 +6207,8 @@ function ScreenerDashboard({
     label: "Highest avg composite score",
     name: hottest ? hottest.industry : "—",
     color: "var(--amber)",
-    sub: hottest ? "score " + hottest.avgScore.toFixed(0) + " · 1M " + fmtPct1(hottest.chg_1m) + " · 3M " + fmtPct1(hottest.chg_3m) : ""
+    sub: hottest ? "score " + hottest.avgScore.toFixed(0) + " · 1M " + fmtPct1(hottest.chg_1m) + " · 3M " + fmtPct1(hottest.chg_3m) : "",
+    detail: hottest ? "1W " + fmtPct1(hottest.chg_1w) + " · " + hottest.over50 + "/" + hottest.count + " stocks above 50 · leader " + (hottest.top ? hottest.top.ticker : "—") : ""
   })))), /*#__PURE__*/React.createElement("div", {
     className: "scr-bar-grid"
   }, /*#__PURE__*/React.createElement(ScrInfo, {
@@ -6198,7 +6218,8 @@ function ScreenerDashboard({
     label: "By avg composite score",
     name: hottest ? hottest.industry : "—",
     color: "var(--green)",
-    sub: hottest ? "score " + hottest.avgScore.toFixed(0) + " · " + hottest.count + " stocks · " + hottest.over50 + " above 50 · " + hottest.sector : ""
+    sub: hottest ? "score " + hottest.avgScore.toFixed(0) + " · " + hottest.count + " stocks · " + hottest.over50 + " above 50 · " + hottest.sector : "",
+    detail: hottest ? "Returns: 1W " + fmtPct1(hottest.chg_1w) + " · 1M " + fmtPct1(hottest.chg_1m) + " · 3M " + fmtPct1(hottest.chg_3m) + "\nBest member: " + (hottest.top ? hottest.top.ticker : "—") + " · score " + (hottest.top ? (hottest.top._score || 0).toFixed(0) : "—") : ""
   })), /*#__PURE__*/React.createElement("div", {
     className: "panel"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6220,7 +6241,8 @@ function ScreenerDashboard({
     label: "Lowest avg composite score",
     name: weakest ? weakest.industry : "—",
     color: "var(--red)",
-    sub: weakest ? "score " + weakest.avgScore.toFixed(0) + " · 1M " + fmtPct1(weakest.chg_1m) + " · " + weakest.sector : ""
+    sub: weakest ? "score " + weakest.avgScore.toFixed(0) + " · 1M " + fmtPct1(weakest.chg_1m) + " · " + weakest.sector : "",
+    detail: weakest ? "Returns: 1W " + fmtPct1(weakest.chg_1w) + " · 3M " + fmtPct1(weakest.chg_3m) + "\nBreadth: " + weakest.over50 + "/" + weakest.count + " stocks above 50 · best member " + (weakest.top ? weakest.top.ticker : "—") : ""
   }))), /*#__PURE__*/React.createElement("div", {
     className: "grid-3"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6428,7 +6450,7 @@ function ScreenerView({
     label: "Score",
     k: "score",
     sort: sortCtl,
-    title: "Composite momentum score (0-100): 15% 1W + 35% 1M + 25% 3M performance blended with 15% ADR and 10% price extension vs the 10 EMA, min-max normalized across all screened stocks"
+    title: "Composite momentum score (0-100): 90% returns (8% 1W, 40% 1M, 40% 3M, 2% 6M), 7% ADR (scores 100 at 5% or higher), and 3% price extension vs the 10 EMA"
   }), /*#__PURE__*/React.createElement(SortTh, {
     label: "1D",
     k: "chg_1d",
