@@ -4831,7 +4831,20 @@ function WatchlistPage({wl}) {
                   title="Show TradingView charts for every stock in the list"/>
         </div>
         {chartsOn && <ChartLayoutSettings layout={chartLayout} onChange={updateChartLayout}/>}
-        {chartsOn && items.length>0 && <StockChartsGrid stocks={items} layout={chartLayout} renderAction={s=><WatchBtn wl={wl} ticker={s.ticker}/>}/>}
+        {chartsOn && items.length>0 && !groups &&
+          <StockChartsGrid stocks={items} layout={chartLayout} renderAction={s=><WatchBtn wl={wl} ticker={s.ticker}/>}/>}
+        {chartsOn && items.length>0 && groups && groups.map(g=>(
+          <div key={g.name} className="wl-group">
+            <div className="wl-group-head">
+              <span className="wl-group-name">{g.name}</span>
+              <span className="mono text-dim">{g.items.length} stocks</span>
+              <span className={"mono "+(g.a1m==null?"":pctClass(g.a1m))}>1M {fmtPct1(g.a1m)}</span>
+              <span className={"mono "+(g.a3m==null?"":pctClass(g.a3m))}>3M {fmtPct1(g.a3m)}</span>
+              <span className="mono text-dim">avg Bo {g.aBo==null ? "—" : g.aBo.toFixed(1)}</span>
+            </div>
+            <StockChartsGrid stocks={sort.apply(g.items, {...WL_SORT_KEYS, grp_bo: e=> e._grpBo ?? -1})} layout={chartLayout} renderAction={s=><WatchBtn wl={wl} ticker={s.ticker}/>}/>
+          </div>
+        ))}
         {!wl.items && <div className="loading">Loading watchlist…</div>}
         {wl.items && items.length===0 &&
           <div className="empty">Watchlist is empty — click the ✓ next to any stock (constituents, screener…) to add it.</div>}

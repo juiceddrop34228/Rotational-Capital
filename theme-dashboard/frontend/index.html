@@ -813,11 +813,11 @@ tr.ep-row-consol td{background:rgba(255,159,67,0.06);}
 .ep-pill.missing{color:var(--amber);border-color:rgba(217,160,63,0.4);}
 .ep-pill-row{display:flex;flex-wrap:wrap;gap:5px;}
 .ep-clist{display:flex;flex-direction:column;gap:4px;margin-top:10px;overflow-x:auto;}
-.ep-crow{background:var(--panel);border:1px solid var(--border);border-radius:2px;min-width:1150px;}
+.ep-crow{background:var(--panel);border:1px solid var(--border);border-radius:2px;min-width:1174px;}
 .ep-crow:hover{border-color:var(--border-hover);}
 .ep-crow.rejected{opacity:.45;}
 .ep-crow.open{border-color:var(--accent);}
-.ep-crow-main{display:grid;grid-template-columns:96px minmax(150px,1.2fr) 66px 62px 62px 56px 74px minmax(170px,1.5fr) 108px 70px 58px 104px 62px 88px;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;font-size:12px;}
+.ep-crow-main{display:grid;grid-template-columns:120px minmax(150px,1.2fr) 66px 62px 62px 56px 74px minmax(170px,1.5fr) 108px 70px 58px 104px 62px 88px;gap:8px;align-items:center;padding:6px 10px;cursor:pointer;font-size:12px;}
 .ep-c-id{display:flex;flex-direction:column;min-width:0;}
 .ep-c-name{font-weight:400;font-size:10.5px;color:var(--text-dim);}
 .ep-c-sec{font-size:9.5px;color:var(--text-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -9898,14 +9898,39 @@ function WatchlistPage({
   })), chartsOn && /*#__PURE__*/React.createElement(ChartLayoutSettings, {
     layout: chartLayout,
     onChange: updateChartLayout
-  }), chartsOn && items.length > 0 && /*#__PURE__*/React.createElement(StockChartsGrid, {
+  }), chartsOn && items.length > 0 && !groups && /*#__PURE__*/React.createElement(StockChartsGrid, {
     stocks: items,
     layout: chartLayout,
     renderAction: s => /*#__PURE__*/React.createElement(WatchBtn, {
       wl: wl,
       ticker: s.ticker
     })
-  }), !wl.items && /*#__PURE__*/React.createElement("div", {
+  }), chartsOn && items.length > 0 && groups && groups.map(g => /*#__PURE__*/React.createElement("div", {
+    key: g.name,
+    className: "wl-group"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "wl-group-head"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "wl-group-name"
+  }, g.name), /*#__PURE__*/React.createElement("span", {
+    className: "mono text-dim"
+  }, g.items.length, " stocks"), /*#__PURE__*/React.createElement("span", {
+    className: "mono " + (g.a1m == null ? "" : pctClass(g.a1m))
+  }, "1M ", fmtPct1(g.a1m)), /*#__PURE__*/React.createElement("span", {
+    className: "mono " + (g.a3m == null ? "" : pctClass(g.a3m))
+  }, "3M ", fmtPct1(g.a3m)), /*#__PURE__*/React.createElement("span", {
+    className: "mono text-dim"
+  }, "avg Bo ", g.aBo == null ? "—" : g.aBo.toFixed(1))), /*#__PURE__*/React.createElement(StockChartsGrid, {
+    stocks: sort.apply(g.items, {
+      ...WL_SORT_KEYS,
+      grp_bo: e => e._grpBo ?? -1
+    }),
+    layout: chartLayout,
+    renderAction: s => /*#__PURE__*/React.createElement(WatchBtn, {
+      wl: wl,
+      ticker: s.ticker
+    })
+  }))), !wl.items && /*#__PURE__*/React.createElement("div", {
     className: "loading"
   }, "Loading watchlist…"), wl.items && items.length === 0 && /*#__PURE__*/React.createElement("div", {
     className: "empty"
