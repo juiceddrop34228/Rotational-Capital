@@ -273,6 +273,46 @@ function withStockScores(stocks, adrWeight=0){
   });
 }
 
+// ---------------------------------------------------------------------------
+// Screener momentum model — composite score computed purely from the screener
+// dataset: heavily weighted short-to-medium-term performance (15% 1W + 35% 1M
+// + 25% 3M) blended with average daily range (15% ADR) and price extension
+// relative to the 10 EMA (10%). Every input is min-max normalized to 0-100
+// across the screened universe before blending. Used only by the Screener
+// section (other views keep the plain performance score above).
+// ---------------------------------------------------------------------------
+const MOM_WEIGHTS = [
+  ["1W",  s=> s.chg_1w,   0.15],
+  ["1M",  s=> s.chg_1m,   0.35],
+  ["3M",  s=> s.chg_3m,   0.25],
+  ["ADR", s=> s.adr_pct,  0.15],
+  ["EXT", s=> extVsEma10(s), 0.10],
+];
+function extVsEma10(s){
+  if(s.ext_ema10!=null) return s.ext_ema10;
+  if(s.price!=null && s.ema10) return (s.price/s.ema10-1)*100;
+  return null;
+}
+function _normVals(vals){
+  const known = vals.filter(v=> v!=null && !isNaN(v));
+  if(!known.length) return vals.map(()=>null);
+  const fill = avg(known);
+  const mn = Math.min(...known), span = (Math.max(...known)-mn)||1;
+  return vals.map(v=> (((v==null||isNaN(v)) ? fill : v)-mn)/span*100);
+}
+function withMomentumScores(stocks){
+  if(!stocks || !stocks.length) return stocks || [];
+  const cols = MOM_WEIGHTS.map(([,get])=> _normVals(stocks.map(get)));
+  return stocks.map((s,i)=>{
+    let acc=0, wsum=0;
+    MOM_WEIGHTS.forEach((m,ci)=>{
+      const v = cols[ci][i];
+      if(v!=null){ acc += v*m[2]; wsum += m[2]; }
+    });
+    return {...s, _score: Math.round((wsum ? acc/wsum : 0)*10)/10};
+  });
+}
+
 function AreaChart({series, width=640, height=220, pad=32, colors, yDomain}) {
   if(!series || series.length===0 || series[0].values.length<2) return <div className="empty">No data</div>;
   const allVals = series.flatMap(s=>s.values);
@@ -2413,6 +2453,268 @@ function Pager({page, totalPages, onPage}) {
 const SCREENER_PAGE_SIZE = 10;
 const DRILL_PAGE_SIZE = 25;
 
+// ---------------------------------------------------------------------------
+// Screener infographic dashboard — every widget below is computed from the
+// screener dataset itself (the scored stocks array), no extra API calls.
+// ---------------------------------------------------------------------------
+// Per-industry aggregates over the scored universe — powers the rotation
+// chart, the ranking bars and the "composite score > 50" dominance stats.
+function screenerIndustries(stocks){
+  const groups = {};
+  stocks.forEach(s=>{
+    const key = s.industry || "Other";
+    (groups[key] = groups[key] || {industry:key, sector:s.sector_name||"Other", members:[]}).members.push(s);
+  });
+  return Object.values(groups).map(g=>{
+    const m = g.members;
+    return {
+      industry: g.industry, sector: g.sector, count: m.length,
+      over50: m.filter(x=>(x._score||0)>50).length,
+      avgScore: avg(m.map(x=>x._score||0)),
+      chg_1w: avg(m.map(x=>x.chg_1w||0)),
+      chg_1m: avg(m.map(x=>x.chg_1m||0)),
+      chg_3m: avg(m.map(x=>x.chg_3m||0)),
+      rs: avg(m.map(x=> x.rs_rating==null ? 50 : x.rs_rating)),
+      top: maxBy(m, x=>x._score||0),
+    };
+  }).sort((a,b)=> b.avgScore - a.avgScore);
+}
+
+function ScrInfo({title, hint, children, grow}) {
+  return (
+    <div className={"panel scr-info"+(grow?" scr-grow":"")}>
+      <div className="panel-title"><span>{title}</span>{hint && <span className="hint">{hint}</span>}</div>
+      {children}
+    </div>
+  );
+}
+
+function ScrCallout({label, name, sub, color}) {
+  return (
+    <div>
+      <div className="stat-label">{label}</div>
+      <div className="scr-callout" style={color?{color}:undefined}>{name}</div>
+      {sub && <div className="scr-callout-sub">{sub}</div>}
+    </div>
+  );
+}
+
+// Gamified top-performer podium: top 3 by composite momentum score.
+function ScreenerPodium({stocks, wl}) {
+  const top3 = [...stocks].sort((a,b)=>(b._score||0)-(a._score||0)).slice(0,3);
+  if(top3.length<3) return <div className="empty">Need at least 3 stocks</div>;
+  const order = [top3[1], top3[0], top3[2]];
+  const ranks = [2, 1, 3];
+  return (
+    <div className="podium">
+      {order.map((s,i)=>(
+        <div key={s.ticker} className={"podium-col podium-"+ranks[i]}>
+          <div className="podium-tick mono">{s.ticker}</div>
+          <div className="podium-sub">{fmtPct1(s.chg_1m)} 1M · score {(s._score||0).toFixed(0)}</div>
+          <div className="podium-block">
+            <div className="podium-rank">{ranks[i]}</div>
+            <WatchBtn wl={wl} ticker={s.ticker}/>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScreenerDashboard({stocks, wl}) {
+  if(!stocks || !stocks.length) return null;
+  const n = stocks.length;
+  const inds = screenerIndustries(stocks);
+
+  // --- aggregate telemetry ---
+  const scores = stocks.map(s=>s._score||0);
+  const over50 = stocks.filter(s=>(s._score||0)>50);
+  const adv1m = stocks.filter(s=>(s.chg_1m||0)>1).length;
+  const dec1m = stocks.filter(s=>(s.chg_1m||0)<-1).length;
+  const flat1m = n - adv1m - dec1m;
+  const above10 = stocks.filter(s=>{ const e=extVsEma10(s); return e!=null && e>0; }).length;
+  const avgAdr = avg(stocks.map(s=>s.adr_pct).filter(v=>v!=null));
+
+  // --- industry rotation (RRG): x = avg RS rating, y = weekly momentum vs monthly pace ---
+  const rrgRows = inds.filter(i=>i.count>=2).map(i=>({
+    industry: i.industry, sector: i.sector,
+    x: i.rs, y: i.chg_1w - i.chg_1m/4,
+  }));
+  const leading = rrgRows.filter(r=> r.x>50 && r.y>0);
+  const leadingTop = maxBy(inds.filter(i=> i.rs>50 && (i.chg_1w - i.chg_1m/4)>0), i=>i.avgScore);
+  const dominant = maxBy(inds, i=> i.over50*1000 + i.avgScore);
+  const hottest = inds[0];
+  const weakest = inds[inds.length-1];
+
+  // --- ranking bars: industries by avg composite score ---
+  const indBarRows = inds.slice(0, 10).map(i=>({
+    label: i.industry.length>20 ? i.industry.slice(0,19)+"…" : i.industry,
+    value: Math.round(i.avgScore*10)/10,
+    color: i.avgScore>=50 ? "var(--green)" : "var(--amber)",
+  }));
+
+  // --- donuts: sector mix, 1M breadth, high-momentum clusters (score > 50) ---
+  const secGroups = {};
+  stocks.forEach(s=>{
+    const k = s.sector_name || "Other";
+    (secGroups[k] = secGroups[k] || {label:k, value:0, color:s.sector_color}).value++;
+  });
+  let secSegs = Object.values(secGroups).sort((a,b)=>b.value-a.value);
+  if(secSegs.length>8){
+    const rest = secSegs.splice(8);
+    secSegs.push({label:"Other", value: rest.reduce((a,s)=>a+s.value,0), color:"#5f6470"});
+  }
+  secSegs.forEach((s,i)=>{ if(!s.color) s.color = SECTOR_PALETTE[i%SECTOR_PALETTE.length]; });
+
+  const breadthSegs = [
+    {label:"Advancing", value: adv1m, color:"var(--green)"},
+    {label:"Flat", value: flat1m, color:"var(--amber)"},
+    {label:"Declining", value: dec1m, color:"var(--red)"},
+  ].filter(s=>s.value>0);
+
+  const byOver50 = [...inds].sort((a,b)=> b.over50-a.over50 || b.avgScore-a.avgScore);
+  let cluSegs = byOver50.filter(i=>i.over50>0).slice(0,6)
+    .map((i,ix)=>({label: i.industry.length>18 ? i.industry.slice(0,17)+"…" : i.industry, value:i.over50, color:SECTOR_PALETTE[ix%SECTOR_PALETTE.length]}));
+  const cluRest = over50.length - cluSegs.reduce((a,s)=>a+s.value,0);
+  if(cluRest>0) cluSegs.push({label:"Other", value:cluRest, color:"#5f6470"});
+  if(!cluSegs.length) cluSegs = [{label:"None > 50", value:1, color:"#5f6470"}];
+
+  // --- return leaders ---
+  const retBars = [...stocks].sort((a,b)=>(b.chg_1m??-1e9)-(a.chg_1m??-1e9)).slice(0,12)
+    .map(s=>({label:s.ticker, value:Math.round((s.chg_1m||0)*100)/100, color:"var(--accent)"}));
+  const lead1w = maxBy(stocks, s=>s.chg_1w??-1e9);
+  const lead1m = maxBy(stocks, s=>s.chg_1m??-1e9);
+  const lead3m = maxBy(stocks, s=>s.chg_3m??-1e9);
+  const standouts = [...stocks].sort((a,b)=>(b._score||0)-(a._score||0)).slice(0,3);
+
+  return (
+    <div className="scr-dash">
+      {/* Row 1 — aggregate telemetry */}
+      <div className="grid-2">
+        <ScrInfo title="Universe Telemetry" hint="computed from all screened stocks">
+          <div className="scr-metrics">
+            <div className="metric"><div className="stat-label">Stocks</div><div className="stat-value">{n}</div></div>
+            <div className="metric"><div className="stat-label">Avg Score</div><div className="stat-value">{avg(scores).toFixed(1)}</div></div>
+            <div className="metric"><div className="stat-label">Median 1M</div><div className={"stat-value "+pctClass(median(stocks.map(s=>s.chg_1m||0)))}>{fmtPct1(median(stocks.map(s=>s.chg_1m||0)))}</div></div>
+            <div className="metric"><div className="stat-label">Avg ADR</div><div className="stat-value">{avgAdr.toFixed(2)}%</div></div>
+            <div className="metric"><div className="stat-label">Above 10 EMA</div><div className="stat-value">{(above10/n*100).toFixed(0)}%</div></div>
+            <div className="metric"><div className="stat-label">Score &gt; 50</div><div className="stat-value pos">{over50.length}</div></div>
+          </div>
+        </ScrInfo>
+        <ScrInfo title="Momentum Pulse" hint="mean returns across the universe">
+          <div className="scr-metrics">
+            <div className="metric"><div className="stat-label">Avg 1W</div><div className={"stat-value "+pctClass(avg(stocks.map(s=>s.chg_1w||0)))}>{fmtPct1(avg(stocks.map(s=>s.chg_1w||0)))}</div></div>
+            <div className="metric"><div className="stat-label">Avg 1M</div><div className={"stat-value "+pctClass(avg(stocks.map(s=>s.chg_1m||0)))}>{fmtPct1(avg(stocks.map(s=>s.chg_1m||0)))}</div></div>
+            <div className="metric"><div className="stat-label">Avg 3M</div><div className={"stat-value "+pctClass(avg(stocks.map(s=>s.chg_3m||0)))}>{fmtPct1(avg(stocks.map(s=>s.chg_3m||0)))}</div></div>
+            <div className="metric"><div className="stat-label">Advancing 1M</div><div className="stat-value pos">{adv1m}</div></div>
+            <div className="metric"><div className="stat-label">Declining 1M</div><div className="stat-value neg">{dec1m}</div></div>
+            <div className="metric"><div className="stat-label">Industries</div><div className="stat-value">{inds.length}</div></div>
+          </div>
+        </ScrInfo>
+      </div>
+
+      {/* Row 2 — RRG + stacked summary blocks */}
+      <div className="scr-rrg-grid">
+        <div className="panel">
+          <div className="panel-title">
+            <span>Industry Rotation — RRG</span>
+            <span className="hint">x: avg RS rating (mid 50) · y: 1W momentum vs 1M pace · industries with ≥2 screened stocks · hover a dot</span>
+          </div>
+          <RRGDots rows={rrgRows} midX={50} midY={0}/>
+        </div>
+        <div className="scr-stack">
+          <ScrInfo title="Leading Quadrant" grow>
+            <ScrCallout label="RS > 50 & accelerating" name={leading.length+" industries"} color="var(--green)"
+              sub={leadingTop ? "Strongest: "+leadingTop.industry+" — avg score "+leadingTop.avgScore.toFixed(0)+" · "+leadingTop.over50+"/"+leadingTop.count+" members score > 50" : "No industry is leading right now"}/>
+          </ScrInfo>
+          <ScrInfo title="Dominant Cluster" grow>
+            <ScrCallout label="Most members scoring > 50" name={dominant ? dominant.industry : "—"} color="var(--accent)"
+              sub={dominant ? dominant.over50+" of "+dominant.count+" members above 50 · avg score "+dominant.avgScore.toFixed(0)+" · top: "+(dominant.top?dominant.top.ticker:"—") : ""}/>
+          </ScrInfo>
+          <ScrInfo title="Hottest Industry" grow>
+            <ScrCallout label="Highest avg composite score" name={hottest ? hottest.industry : "—"} color="var(--amber)"
+              sub={hottest ? "score "+hottest.avgScore.toFixed(0)+" · 1M "+fmtPct1(hottest.chg_1m)+" · 3M "+fmtPct1(hottest.chg_3m) : ""}/>
+          </ScrInfo>
+        </div>
+      </div>
+
+      {/* Row 3 — industry ranking bars flanked by callouts */}
+      <div className="scr-bar-grid">
+        <ScrInfo title="Top Industry" grow>
+          <ScrCallout label="By avg composite score" name={hottest ? hottest.industry : "—"} color="var(--green)"
+            sub={hottest ? "score "+hottest.avgScore.toFixed(0)+" · "+hottest.count+" stocks · "+hottest.over50+" above 50 · "+hottest.sector : ""}/>
+        </ScrInfo>
+        <div className="panel">
+          <div className="panel-title">
+            <span>Industry Ranking — Avg Momentum Score</span>
+            <span className="hint">top 10 · green = avg score ≥ 50</span>
+          </div>
+          <HBars rows={indBarRows} fmt={v=>v.toFixed(1)} padL={150} refLine={{x:50, label:"50"}}/>
+        </div>
+        <ScrInfo title="Weakest Industry" grow>
+          <ScrCallout label="Lowest avg composite score" name={weakest ? weakest.industry : "—"} color="var(--red)"
+            sub={weakest ? "score "+weakest.avgScore.toFixed(0)+" · 1M "+fmtPct1(weakest.chg_1m)+" · "+weakest.sector : ""}/>
+        </ScrInfo>
+      </div>
+
+      {/* Row 4 — market breadth pies */}
+      <div className="grid-3">
+        <div className="panel">
+          <div className="panel-title"><span>Sector Mix</span><span className="hint">screened stocks per sector</span></div>
+          <Donut segments={secSegs} centerLabel={n}/>
+        </div>
+        <div className="panel">
+          <div className="panel-title"><span>1M Market Breadth</span><span className="hint">±1% threshold</span></div>
+          <Donut segments={breadthSegs} centerLabel={((adv1m/n)*100).toFixed(0)+"% up"}/>
+        </div>
+        <div className="panel">
+          <div className="panel-title"><span>High-Momentum Clusters</span><span className="hint">members with score &gt; 50, by industry</span></div>
+          <Donut segments={cluSegs} centerLabel={over50.length}/>
+        </div>
+      </div>
+
+      {/* Rows 5+6 — leaders module + podium | return-leader bars + standouts */}
+      <div className="scr-duo-grid">
+        <div className="scr-stack">
+          <ScrInfo title="Return Leaders" hint="top ticker per timeframe">
+            {[["1W", lead1w, lead1w?lead1w.chg_1w:null],
+              ["1M", lead1m, lead1m?lead1m.chg_1m:null],
+              ["3M", lead3m, lead3m?lead3m.chg_3m:null]].map(([lbl, s, v])=>(
+              <div key={lbl} className="scr-leader-row">
+                <span className="lbl">{lbl}</span>
+                <WatchBtn wl={wl} ticker={s?s.ticker:null}/>
+                <span className="tk">{s?s.ticker:"—"}</span>
+                <span className="text-dim" style={{fontSize:11}}>{s?(s.industry||s.sector_name||""):""}</span>
+                <span className={"val "+(v!=null?pctClass(v):"")}>{fmtPct(v)}</span>
+              </div>
+            ))}
+          </ScrInfo>
+          <div className="panel scr-grow">
+            <div className="panel-title"><span>Top Performers — Podium</span><span className="hint">by composite momentum score</span></div>
+            <ScreenerPodium stocks={stocks} wl={wl}/>
+          </div>
+        </div>
+        <div className="scr-stack">
+          <div className="panel">
+            <div className="panel-title"><span>Top Return Leaders — 1M</span><span className="hint">top 12 screened stocks</span></div>
+            <HBars rows={retBars} fmt={v=>fmtPct1(v)} padL={70}/>
+          </div>
+          <ScrInfo title="Standout Tickers" hint="highest composite scores" grow>
+            {standouts.map(s=>(
+              <div key={s.ticker} className="scr-leader-row">
+                <WatchBtn wl={wl} ticker={s.ticker}/>
+                <span className="tk">{s.ticker}</span>
+                <span className="text-dim" style={{fontSize:11}}>{s.industry||s.sector_name||""}</span>
+                <span className={"val "+pctClass(s.chg_1m||0)}>{(s._score||0).toFixed(0)} · {fmtPct1(s.chg_1m)}</span>
+              </div>
+            ))}
+          </ScrInfo>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ScreenerView({strategy, wl}) {
   const [data, loading, , err] = useApi(apiUrl("/api/screener", strategy), [strategy]);
   const sort = useSortable((a,b)=> (a.rank_3m||1e9) - (b.rank_3m||1e9));
@@ -2423,7 +2725,8 @@ function ScreenerView({strategy, wl}) {
   if(err) return <div className="loading error">Error: {err}</div>;
   if(!data) return null;
 
-  const stocks = sort.apply(withStockScores(data.stocks), SCREENER_SORT_KEYS);
+  const scored = withMomentumScores(data.stocks);
+  const stocks = sort.apply(scored, SCREENER_SORT_KEYS);
   const totalPages = Math.max(1, Math.ceil(stocks.length / SCREENER_PAGE_SIZE));
   const curPage = Math.min(page, totalPages);
   const pageRows = stocks.slice((curPage-1)*SCREENER_PAGE_SIZE, curPage*SCREENER_PAGE_SIZE);
@@ -2441,6 +2744,7 @@ function ScreenerView({strategy, wl}) {
         <span className="filter-pill">ADR ≥ 2%</span>
         <span className="filter-pill">{data.count} stocks</span>
       </div>
+      <ScreenerDashboard stocks={scored} wl={wl}/>
       <div className="panel">
         <div className="panel-title">
           <span>All Stocks — Rankings</span>
@@ -2464,7 +2768,7 @@ function ScreenerView({strategy, wl}) {
                 <SortTh label="Price" k="price" sort={sortCtl}/>
                 <SortTh label="Mkt Cap" k="mcap" sort={sortCtl}/>
                 <SortTh label="Avg Vol" k="avgvol" sort={sortCtl}/>
-                <SortTh label="Score" k="score" sort={sortCtl} title="Performance score: 15% 1W + 50% 1M + 35% 3M, normalized 0-100 across all screened stocks (same weighting as the industry leadership score)"/>
+                <SortTh label="Score" k="score" sort={sortCtl} title="Composite momentum score (0-100): 15% 1W + 35% 1M + 25% 3M performance blended with 15% ADR and 10% price extension vs the 10 EMA, min-max normalized across all screened stocks"/>
                 <SortTh label="1D" k="chg_1d" sort={sortCtl}/>
                 <SortTh label="1W" k="chg_1w" sort={sortCtl}/>
                 <SortTh label="1M" k="chg_1m" sort={sortCtl}/>
