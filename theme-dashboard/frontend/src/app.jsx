@@ -248,16 +248,17 @@ function ScoreBar({value}) {
 }
 
 // ---------------------------------------------------------------------------
-// Relative Strength score (0-100): each stock is ranked against the other
-// stocks in the list — which is always the eligibility-filtered universe for
-// the view being displayed — using a performance composite of 15% 1W + 50% 1M
-// + 35% 3M returns. The score is the stock's percentile rank within this
-// accepted pool (higher = stronger relative price performance). Returns new
-// objects with `_score` attached. Used for the Screener and industry stock
-// tables; mirrors engine.score_and_rank on the backend.
+// Relative Strength score (0-100). The backend (engine.score_and_rank over
+// the FULL screener universe) attaches a universal `score` to every stock —
+// it never changes no matter which group (screener / industry / sector / ETF
+// holdings) the stock is viewed in, so it is used verbatim here. The local
+// percentile computation below only runs as a fallback for rows that arrived
+// without a backend score.
 // ---------------------------------------------------------------------------
 function rsScore(stocks){
   if(!stocks || !stocks.length) return stocks || [];
+  if(stocks.every(s=> s.score!=null))
+    return stocks.map(s=> ({...s, _score: Math.round(s.score*10)/10}));
   const perf = s=> 0.15*(s.chg_1w||0) + 0.50*(s.chg_1m||0) + 0.35*(s.chg_3m||0);
   const vals = stocks.map(perf);
   const n = vals.length;
@@ -1891,7 +1892,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
                 <SortTh label="Sector" k="sector" sort={indSortCtl}/>
                 <SortTh label="Price" k="price" sort={indSortCtl}/>
                 <SortTh label="Mkt Cap" k="mcap" sort={indSortCtl}/>
-                <SortTh label="Score" k="score" sort={indSortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within this eligibility-filtered universe; higher = stronger relative performance"/>
+                <SortTh label="Score" k="score" sort={indSortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within the full screener universe; the score is universal per stock and identical in every view"/>
                 <SortTh label="1D" k="chg_1d" sort={indSortCtl}/>
                 <SortTh label="1W" k="chg_1w" sort={indSortCtl}/>
                 <SortTh label="1M" k="chg_1m" sort={indSortCtl}/>
@@ -2270,7 +2271,7 @@ function HoldingsTable({holdings, filter, chartsOn=false, layout=null, wl=null})
             <SortTh label="Price" k="price" sort={sortCtl}/>
             <SortTh label="Mkt Cap" k="mcap" sort={sortCtl}/>
             <SortTh label="Avg Vol" k="avgvol" sort={sortCtl}/>
-            <SortTh label="Score" k="score" sort={sortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within this eligibility-filtered universe; higher = stronger relative performance"/>
+            <SortTh label="Score" k="score" sort={sortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within the full screener universe; the score is universal per stock and identical in every view"/>
             <SortTh label="1D" k="chg_1d" sort={sortCtl}/>
             <SortTh label="1W" k="chg_1w" sort={sortCtl}/>
             <SortTh label="1M" k="chg_1m" sort={sortCtl}/>

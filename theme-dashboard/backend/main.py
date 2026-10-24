@@ -211,6 +211,34 @@ def _norm_strategy(strategy):
     return strategy if strategy in engine.STRATEGY_DEFS else engine.STRATEGY_DEFAULT
 
 
+def _scored_universe(conn, strategy, cci):
+    """Score the FULL filtered stock universe once (the exact same pool as
+    /api/screener) and return {ticker: scored row}.
+
+    A stock's score is universal: group views (industry constituents, sector
+    stocks, ETF holdings) must look scores up here instead of re-scoring the
+    subset, so the score never changes depending on where the stock is viewed."""
+    rows = conn.execute(
+        f"""SELECT s.*, sec.name AS sector_name, sec.color AS sector_color
+           FROM stock s LEFT JOIN sector sec ON sec.id = s.sector_id
+           WHERE s.ticker != ? AND {STOCK_FILTER_SQL}""",
+        (BENCHMARK_TICKER, *STOCK_FILTER_PARAMS),
+    ).fetchall()
+    stocks = [dict(r) for r in rows]
+    stocks, _ = engine.score_and_rank(stocks, _norm_strategy(strategy), cci)
+    return {s["ticker"]: s for s in stocks}
+
+
+def _group_rank(scored, ticker_key="ticker"):
+    """Order a group's universally-scored members strongest-first and give
+    them a within-group display rank (1..N). The score itself stays the
+    universal universe score."""
+    scored.sort(key=lambda r: (-r["score"], r.get(ticker_key) or ""))
+    for i, r in enumerate(scored):
+        r["rank"] = i + 1
+    return scored
+
+
 def _strategy_context(conn, strategy):
     """Compute per-strategy sector scores + states for the latest snapshot.
 
@@ -279,6 +307,7 @@ def _strategy_context(conn, strategy):
 
 def _sector_holdings_ranked(sector_id, conn, strategy=engine.STRATEGY_DEFAULT, cci_factor=50.0):
     etfs = conn.execute("SELECT * FROM etf WHERE sector_id=?", (sector_id,)).fetchall()
+    universe = _scored_universe(conn, strategy, cci_factor)
     all_ranked = {}
     for etf in etfs:
         rows = conn.execute(
@@ -288,11 +317,20 @@ def _sector_holdings_ranked(sector_id, conn, strategy=engine.STRATEGY_DEFAULT, c
             (etf["ticker"],),
         ).fetchall()
         merged = [dict(r) for r in rows]
-        ranked, excluded = engine.score_and_rank(merged, strategy, cci_factor)
+        ranked = []
+        for r in merged:
+            u = universe.get(r["stock_ticker"])
+            if u is None:
+                continue  # fails the universal eligibility filters
+            r["score"] = u["score"]
+            r["composite_factors"] = u["composite_factors"]
+            r["classification"] = u["classification"]
+            ranked.append(r)
+        _group_rank(ranked, ticker_key="stock_ticker")
         all_ranked[etf["ticker"]] = {
             "etf": dict(etf),
             "holdings": ranked,
-            "excluded_count": excluded,
+            "excluded_count": len(merged) - len(ranked),
             "total_holdings": len(merged),
         }
     return all_ranked
@@ -641,13 +679,14 @@ def _industry_rows(conn, sector_id=None, strategy=None, cci_factor=50.0):
            for name, members in by_industry.items()]
     if strategy is not None:
         strategy = _norm_strategy(strategy)
+        universe = _scored_universe(conn, strategy, cci_factor)
         for row in out:
-            members = row["_members"]
-            ranked, _ = engine.score_and_rank(members, strategy, cci_factor)
+            scored = [universe[m["ticker"]] for m in row["_members"]
+                      if m["ticker"] in universe]
             row["strategy_score"] = (
-                round(sum(m["score"] for m in ranked) / len(ranked), 1) if ranked else None
+                round(sum(m["score"] for m in scored) / len(scored), 1) if scored else None
             )
-            row["strategy_leaders"] = sum(1 for m in ranked if m.get("classification") == "leader")
+            row["strategy_leaders"] = sum(1 for m in scored if m.get("classification") == "leader")
     page = _industry_page_lookup(conn, sector_id)
     for row in out:
         p = page.get(row["industry"].strip().lower())
@@ -885,11 +924,14 @@ def _industry_stocks(industry_name, strategy=None):
              AND s.price >= ?""",
         (industry_name, *STOCK_FILTER_PARAMS),
     ).fetchall()
+    universe = _scored_universe(conn, strategy, cci) if strategy is not None else None
     conn.close()
     merged = [dict(r) for r in rows]
     if strategy is not None:
-        ranked, _ = engine.score_and_rank(merged, strategy, cci)
-        return ranked
+        # Universal score: look each member up in the full-universe scoring
+        # (identical to /api/screener) instead of re-scoring the subset.
+        scored = [universe[r["ticker"]] for r in merged if r["ticker"] in universe]
+        return _group_rank(scored)
     merged.sort(key=lambda r: (r["chg_3m"] is not None, r["chg_3m"] or 0), reverse=True)
     return merged
 
@@ -1003,14 +1045,18 @@ def sector_stocks(sector_id: int, classification: str = None, strategy: str = No
              AND s.price >= ?""",
         (sector_id, BENCHMARK_TICKER, *STOCK_FILTER_PARAMS),
     ).fetchall()
+    universe = _scored_universe(conn, strategy, cci)
     conn.close()
-    merged = []
+    # Universal score: look each member up in the full-universe scoring
+    # (identical to /api/screener) instead of re-scoring the sector subset.
+    ranked = []
     for r in rows:
-        d = dict(r)
-        d["stock_ticker"] = d["ticker"]  # score_and_rank / frontend compat
-        merged.append(d)
-    ranked, _ = engine.score_and_rank(merged, _norm_strategy(strategy), cci)
-    # score_and_rank already orders by (-score, ticker) and assigns rank 1..N
+        u = universe.get(r["ticker"])
+        if u is None:
+            continue  # fails the universal eligibility filters
+        u["stock_ticker"] = u["ticker"]  # frontend compat
+        ranked.append(u)
+    _group_rank(ranked)
     if classification:
         ranked = [r for r in ranked if r["classification"] == classification]
     return ranked
