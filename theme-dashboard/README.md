@@ -1,6 +1,6 @@
-# Sector Rotation Scanner
+# Rotational Capital
 
-A dark-themed, full-fledged sector rotation analysis dashboard for swing traders. It ranks sectors by leadership, emerging momentum, fading strength, and lagging weakness using live market data from free sources.
+A full-fledged sector rotation analysis dashboard for swing traders, with premium dark and light themes. It ranks sectors by leadership, emerging momentum, fading strength, and lagging weakness using live market data from free sources.
 
 ## Multi-factor sector ranking
 
@@ -70,7 +70,7 @@ Then open **http://localhost:8420** in your browser. First run installs Python d
 ## What's included
 
 - **Backend** (`backend/main.py`, `backend/engine.py`, `backend/live_data.py`): FastAPI app, SQLite storage, and the analytics engine.
-- **Frontend** (`frontend/index.html`): Single-file React app with a dark UI, collapsible sidebar, dashboard, and sector drill-downs.
+- **Frontend** (`frontend/index.html`): Single-file React app with persisted dark/light themes, a collapsible sidebar, dashboard, and sector drill-downs.
 - **20 sectors**: TradingView's own sector classification (the same sectors shown on TradingView's US sector page), each with its industries from that page.
 - **Universal filters** applied everywhere (from the TradingView scanner): market cap ≥ **$500M**, average 30-day volume > **1M shares**, price ≥ **$3**, and **ADR ≥ 2%**.
 - **Rotation states**: Leader, Emerging, Fading, Lagging, and Neutral.

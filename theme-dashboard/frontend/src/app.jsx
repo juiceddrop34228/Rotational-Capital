@@ -1,4 +1,5 @@
 const {useState, useEffect, useMemo, useRef} = React;
+const ThemeContext = React.createContext("dark");
 const API = "";
 
 // The strategy dashboard inside the shared scanner shell. Markets is
@@ -161,7 +162,20 @@ const Icon = {
   check: (p) => <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M4 12.5 L9.5 18 L20 6.5"/></svg>,
   zap: (p) => <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M13 2 L4 14 H11 L10 22 L20 9 H13 Z"/></svg>,
   bell: (p) => <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>,
+  sun: (p) => <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"/></svg>,
+  moon: (p) => <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"/></svg>,
 };
+
+function BrandLogo(){
+  return (
+    <svg className="brand-logo" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <path d="M8 3v5M8 23v6" stroke="#6f9fd2" strokeWidth="2"/>
+      <rect x="4.5" y="8" width="7" height="15" rx="1" fill="#6f9fd2"/>
+      <path d="M23 3v7M23 24v5" stroke="var(--text)" strokeWidth="2"/>
+      <rect x="19.5" y="10" width="7" height="14" rx="1" fill="var(--text)"/>
+    </svg>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Watchlist (shared state): breakout tickers, persisted in the backend.
@@ -242,7 +256,7 @@ function ScoreBar({value}) {
   if(value>=70) color = "var(--green)";
   return (
     <div className="bar-bg" style={{height:6, borderRadius:3}}>
-      <div className="bar-fill" style={{width:pct+"%", background:color, borderRadius:3}}></div>
+      <div className={"bar-fill "+(value>=70?"leader":"")} style={{width:pct+"%", background:color, borderRadius:3}}></div>
     </div>
   );
 }
@@ -301,15 +315,16 @@ function AreaChart({series, width=640, height=220, pad=32, colors, yDomain}) {
   );
 }
 
+const RRG_LIGHT_PALETTE = ["#285f9e","#16735f","#8a5a00","#ad3151","#6c4b91","#14737e","#a44a2a","#587200","#a43d68","#4f5f70","#806016","#087469"];
+
 function RRGChart({paths, midX=100, midY=0, labels}) {
+  const theme = React.useContext(ThemeContext);
+  const [selected, setSelected] = useState(null);
+  const [containerRef, containerWidth] = useContainerWidth();
   if(!paths || paths.length===0) return <div className="empty">No rotation data</div>;
-  // Decluttered RRG: keep only the last 8 snapshots per trail, render trails
-  // as faint thin lines, shrink intermediate dots, and emphasize just the
-  // latest point + label (with a dark halo so labels survive overlaps).
+  const narrow = containerWidth!==null && containerWidth<480;
   const TRAIL_LEN = 8;
   const QL = labels || {tl:"IMPROVING", tr:"LEADING", bl:"LAGGING", br:"WEAKENING"};
-  // 4:3 aspect so the panel renders at the same height as the benchmark
-  // trend chart next to it (grid-2 stretches both panels to the row height).
   const w=560,h=420,pad=30;
   paths = paths.map(p=>({...p, points: p.points.slice(-TRAIL_LEN)}));
   const allX = paths.flatMap(p=>p.points.map(pt=>pt.x));
@@ -318,32 +333,62 @@ function RRGChart({paths, midX=100, midY=0, labels}) {
   const rangeY = Math.max(3, Math.max(...allY.map(v=>Math.abs(v-midY)))*1.3);
   const xFor = (v)=> w/2 + ((v-midX)/rangeX)*(w/2-pad);
   const yFor = (v)=> h/2 - ((v-midY)/rangeY)*(h/2-pad);
+  const labelBoxes = [];
+  const labelLayouts = paths.map(p=>{
+    const last = p.points[p.points.length-1];
+    const px=xFor(last.x), py=yFor(last.y);
+    const left=px>w-80, textWidth=p.etf.length*7+8;
+    const lx=left?px-8:px+8;
+    let ly=py+3.5;
+    const candidates=[0,-15,15,-30,30,-45,45,-60,60];
+    for(const offset of candidates){
+      const y=py+3.5+offset;
+      const box={x1:left?lx-textWidth:lx,x2:left?lx:lx+textWidth,y1:y-11,y2:y+4};
+      const collides=labelBoxes.some(b=>box.x1<b.x2&&box.x2>b.x1&&box.y1<b.y2&&box.y2>b.y1);
+      if(y>16&&y<h-10&&!collides){ ly=y; labelBoxes.push(box); break; }
+    }
+    return {left,lx,ly};
+  });
+  const selectedPath = selected===null ? null : paths[selected];
+  const selectedPoint = selectedPath ? selectedPath.points[selectedPath.points.length-1] : null;
   return (
-    <svg width="100%" viewBox={"0 0 "+w+" "+h}>
-      <rect x={w/2} y={0} width={w/2} height={h/2} fill="rgba(62,207,142,0.05)"/>
-      <rect x={0} y={0} width={w/2} height={h/2} fill="rgba(217,164,65,0.05)"/>
-      <rect x={0} y={h/2} width={w/2} height={h/2} fill="rgba(239,91,91,0.05)"/>
-      <rect x={w/2} y={h/2} width={w/2} height={h/2} fill="rgba(91,141,239,0.05)"/>
-      <line x1={w/2} x2={w/2} y1={0} y2={h} stroke="#2a303a"/><line x1={0} x2={w} y1={h/2} y2={h/2} stroke="#2a303a"/>
-      <text x={w-4} y={14} fontSize="9" fill="var(--green)" textAnchor="end">{QL.tr}</text>
-      <text x={4} y={14} fontSize="9" fill="var(--amber)">{QL.tl}</text>
-      <text x={4} y={h-6} fontSize="9" fill="var(--red)">{QL.bl}</text>
-      <text x={w-4} y={h-6} fontSize="9" fill="var(--accent)" textAnchor="end">{QL.br}</text>
-      {paths.map((p,pi)=>{
-        const pts = p.points.map(pt=> xFor(pt.x)+","+yFor(pt.y)).join(" ");
-        const last = p.points[p.points.length-1];
-        return (
-          <g key={p.etf}>
-            <polyline className="draw" pathLength="1" style={{animationDelay:(pi*90)+"ms"}} points={pts} fill="none" stroke={p.color} strokeWidth="1.1" opacity="0.35"/>
-            {p.points.map((pt,i)=> i<p.points.length-1 &&
-              <circle key={i} className="pop-in" style={{animationDelay:(pi*90+i*40)+"ms"}} cx={xFor(pt.x)} cy={yFor(pt.y)} r="1.1" fill={p.color} opacity="0.4"/>)}
-            <circle className="pop-in" style={{animationDelay:(pi*90+p.points.length*40)+"ms"}} cx={xFor(last.x)} cy={yFor(last.y)} r="4.5" fill={p.color} stroke="var(--bg)" strokeWidth="1.5"/>
-            <text className="pop-in" style={{animationDelay:(pi*90+p.points.length*40+60)+"ms"}} x={xFor(last.x)+8} y={yFor(last.y)+3.5} fontSize="11" fontWeight="700" fill={p.color}
-              stroke="var(--bg)" strokeWidth="3" paintOrder="stroke">{p.etf}</text>
-          </g>
-        );
-      })}
-    </svg>
+    <div className="rrg-chart" ref={containerRef}>
+      {narrow && <div className="chart-scroll-note">Scroll horizontally to inspect all sectors · select a point for values</div>}
+      <div className="responsive-chart-scroll">
+        <svg width="100%" viewBox={"0 0 "+w+" "+h} style={narrow?{width:w,minWidth:w}:undefined}>
+          <rect x={w/2} y={0} width={w/2} height={h/2} fill="rgba(62,207,142,0.05)"/>
+          <rect x={0} y={0} width={w/2} height={h/2} fill="rgba(217,164,65,0.05)"/>
+          <rect x={0} y={h/2} width={w/2} height={h/2} fill="rgba(239,91,91,0.05)"/>
+          <rect x={w/2} y={h/2} width={w/2} height={h/2} fill="rgba(91,141,239,0.05)"/>
+          <line x1={w/2} x2={w/2} y1={0} y2={h} stroke="#2a303a"/><line x1={0} x2={w} y1={h/2} y2={h/2} stroke="#2a303a"/>
+          <text x={w-4} y={14} fontSize="10" fill="var(--green)" textAnchor="end">{QL.tr}</text>
+          <text x={4} y={14} fontSize="10" fill="var(--amber)">{QL.tl}</text>
+          <text x={4} y={h-6} fontSize="10" fill="var(--red)">{QL.bl}</text>
+          <text x={w-4} y={h-6} fontSize="10" fill="var(--accent)" textAnchor="end">{QL.br}</text>
+          {paths.map((p,pi)=>{
+            const pts = p.points.map(pt=> xFor(pt.x)+","+yFor(pt.y)).join(" ");
+            const last = p.points[p.points.length-1];
+            const color = theme==="light" ? RRG_LIGHT_PALETTE[pi%RRG_LIGHT_PALETTE.length] : p.color;
+            const label = labelLayouts[pi];
+            return (
+              <g key={p.etf} className="rrg-sector" role="button" tabIndex={0}
+                aria-label={p.etf+" RS-Ratio "+last.x.toFixed(2)+", RS-Momentum "+last.y.toFixed(2)}
+                onClick={()=>setSelected(pi)} onFocus={()=>setSelected(pi)}
+                onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setSelected(pi);}}}>
+                <title>{p.etf+" · RS-Ratio "+last.x.toFixed(2)+" · RS-Momentum "+last.y.toFixed(2)}</title>
+                <polyline className="draw" pathLength="1" style={{animationDelay:(pi*90)+"ms"}} points={pts} fill="none" stroke={color} strokeWidth={theme==="light"?1.4:1.1} opacity={theme==="light"?0.58:0.35}/>
+                {p.points.map((pt,i)=> i<p.points.length-1 &&
+                  <circle key={i} className="pop-in" style={{animationDelay:(pi*90+i*40)+"ms"}} cx={xFor(pt.x)} cy={yFor(pt.y)} r="1.1" fill={color} opacity={theme==="light"?0.65:0.4}/>)}
+                <circle className="pop-in" style={{animationDelay:(pi*90+p.points.length*40)+"ms"}} cx={xFor(last.x)} cy={yFor(last.y)} r={selected===pi?6:4.5} fill={color} stroke="var(--bg)" strokeWidth="1.5"/>
+                <text className="pop-in" style={{animationDelay:(pi*90+p.points.length*40+60)+"ms"}} x={label.lx} y={label.ly} fontSize="11" fontWeight="700" fill={color}
+                  textAnchor={label.left?"end":"start"} stroke="var(--bg)" strokeWidth="3" paintOrder="stroke">{p.etf}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      {selectedPath && selectedPoint && <div className="rrg-detail" aria-live="polite"><strong>{selectedPath.etf}</strong><span>RS-Ratio {selectedPoint.x.toFixed(2)}</span><span>RS-Momentum {selectedPoint.y.toFixed(2)}</span></div>}
+    </div>
   );
 }
 
@@ -365,12 +410,14 @@ const SECTOR_PALETTE = ["#5b8def","#3ecf8e","#ffd166","#ef5b5b","#b388eb",
                         "#f4d35e","#2ec4b6"];
 
 function RRGDots({rows, midX, midY, labels, onSelect, compact}) {
+  const theme = React.useContext(ThemeContext);
   const [hover, setHover] = useState(null); // index into rows
   if(!rows || rows.length===0) return <div className="empty">No rotation data</div>;
   const QL = labels || {tl:"IMPROVING", tr:"LEADING", bl:"LAGGING", br:"WEAKENING"};
   const w=560,h=compact?340:420,pad=30;
   const sectors = [...new Set(rows.map(r=>r.sector||"Other"))].sort();
-  const colorOf = s=> SECTOR_PALETTE[sectors.indexOf(s||"Other") % SECTOR_PALETTE.length];
+  const palette = theme==="light" ? RRG_LIGHT_PALETTE : SECTOR_PALETTE;
+  const colorOf = s=> palette[sectors.indexOf(s||"Other") % palette.length];
   const rangeX = Math.max(20, Math.max(...rows.map(r=>Math.abs(r.x-midX)))*1.3);
   const rangeY = Math.max(10, Math.max(...rows.map(r=>Math.abs(r.y-midY)))*1.3);
   const xFor = v=> w/2 + ((v-midX)/rangeX)*(w/2-pad);
@@ -658,9 +705,11 @@ function MarketAreaChart({values, width=640, height=480, pad=30}) {
 const EMA_DEFS = [["EMA 5","ema5"],["EMA 10","ema10"],["EMA 20","ema20"],["EMA 50","ema50"],["EMA 200","ema200"]];
 // Blue gradient, fastest EMA lightest → slowest EMA darkest. All are EMAs (MAExp).
 const EMA_COLORS = {ema5:"#a5d6ff", ema10:"#79c0ff", ema20:"#539bf5", ema50:"#1f6feb", ema200:"#0d419d"};
+const EMA_COLORS_LIGHT = {ema5:"#6b8ba6", ema10:"#4f7898", ema20:"#396f9f", ema50:"#28537d", ema200:"#183c61"};
 // Each study instance gets a uid so studies_overrides can color them individually.
 const EMA_STUDIES = [5,10,20,50,200].map(n=>({id:"MAExp@tv-basicstudies", uid:"ema"+n, inputs:{length:n}}));
 const EMA_STUDY_OVERRIDES = Object.fromEntries(EMA_DEFS.map(([,key])=>[key+".plot.color", EMA_COLORS[key]]));
+const EMA_STUDY_OVERRIDES_LIGHT = Object.fromEntries(EMA_DEFS.map(([,key])=>[key+".plot.color", EMA_COLORS_LIGHT[key]]));
 
 let _tvScriptPromise = null;
 function loadTvScript(){
@@ -679,6 +728,7 @@ function loadTvScript(){
 let _tvUid = 0;
 function TVChart({symbol, interval="D", height=360}){
   const ref = useRef(null);
+  const theme = React.useContext(ThemeContext);
   const [visible, setVisible] = useState(false);
   const [failed, setFailed] = useState(false);
   // Lazy-mount: only build the (heavy) widget when the chart scrolls into view.
@@ -709,7 +759,7 @@ function TVChart({symbol, interval="D", height=360}){
           container_id: id,
           symbol: symbol,
           interval: interval,
-          theme: "dark",
+          theme: theme,
           style: "1",
           locale: "en",
           width: "100%",
@@ -718,14 +768,14 @@ function TVChart({symbol, interval="D", height=360}){
           allow_symbol_change: false,
           save_image: false,
           studies: EMA_STUDIES,
-          studies_overrides: EMA_STUDY_OVERRIDES,
+          studies_overrides: theme==="dark" ? EMA_STUDY_OVERRIDES : EMA_STUDY_OVERRIDES_LIGHT,
           // Logarithmic price scale everywhere (not the auto-adjusted default).
           overrides: {"mainSeriesProperties.priceAxisProperties.log": true},
         });
       }catch(e){ setFailed(true); }
     }).catch(()=>{ if(!cancelled) setFailed(true); });
     return ()=>{ cancelled = true; if(ref.current) ref.current.innerHTML = ""; };
-  },[visible, symbol, interval, height]);
+  },[visible, symbol, interval, height, theme]);
   return (
     <div className="tv-chart" ref={ref} style={{minHeight:height}}>
       {!visible && !failed && <div className="tv-chart-placeholder" style={{height:height}}>Chart loads when visible…</div>}
@@ -736,12 +786,14 @@ function TVChart({symbol, interval="D", height=360}){
 
 // Numeric 5/10/20/50/200 EMA readout rendered below a chart. Symmetric cells.
 function EmaStrip({emas, price}){
+  const theme = React.useContext(ThemeContext);
+  const colors = theme==="dark" ? EMA_COLORS : EMA_COLORS_LIGHT;
   return (
     <div className="ema-strip">
       {EMA_DEFS.map(([label, key])=>{
         const v = emas ? emas[key] : null;
         const above = (v!=null && price!=null) ? price >= v : null;
-        const c = EMA_COLORS[key];
+        const c = colors[key];
         return (
           <div key={key} className="ema-cell">
             <div className="stat-label"><span className="ema-dot" style={{background:c}}></span>{label}</div>
@@ -912,74 +964,96 @@ function SectorScoreBars({sectors, onSelectSector}) {
 
 // Grouped diverging bars: 1W / 1M / 3M returns per sector around a zero line.
 function PerfCompareBars({sectors, onSelectSector, compact=false}) {
+  const [containerRef, containerWidth] = useContainerWidth();
   if(!sectors || sectors.length===0) return <div className="empty">No data</div>;
+  const narrow = containerWidth!==null && containerWidth<520;
+  const tight = compact && !narrow;
   const periods = [["chg_1w","var(--accent)"],["chg_1m","var(--purple)"],["chg_3m","var(--amber)"]];
   const rows = [...sectors].sort((a,b)=> (snapOf(b).chg_1m||0) - (snapOf(a).chg_1m||0));
   const maxAbs = Math.max(...sectors.flatMap(s=> periods.map(p=> Math.abs(snapOf(s)[p[0]]||0))), 1);
-  const width=640, rowH=compact?17:24, padL=60, padR=12, barH=compact?3.4:5.5, gap=compact?1:1.5;
-  const labelSize = compact?10.5:12;
+  const width=640, rowH=narrow?28:tight?17:24, padL=60, padR=12, barH=tight?3.4:5.5, gap=tight?1:1.5;
+  const labelSize = tight?10.5:12;
   const h = rows.length*rowH+10;
   const zeroX = padL + (width-padL-padR)/2;
   const half = (width-padL-padR)/2;
   return (
-    <svg width="100%" viewBox={"0 0 "+width+" "+h} style={{maxWidth:compact?"none":700, display:"block"}}>
-      <line x1={zeroX} x2={zeroX} y1={0} y2={h} stroke="#2a303a"/>
-      {rows.map((s,i)=>{
-        const sn = snapOf(s);
-        const top = i*rowH+(compact?4:6);
-        return (
-          <g key={s.id} className="svg-row" onClick={()=>onSelectSector && onSelectSector(s.id)}>
-            <text x={padL-8} y={top+9} fontSize={labelSize} fill="var(--text-dim)" textAnchor="end">{s.ticker}</text>
-            {periods.map((p,j)=>{
-              const v = sn[p[0]]||0;
-              const bw = Math.max(1.5, (Math.abs(v)/maxAbs)*half);
-              const x = v>=0 ? zeroX : zeroX-bw;
-              return <rect key={p[0]} className="bar-grow"
-                style={{transformOrigin:(v>=0?"left":"right")+" center", animationDelay:(i*30+j*50)+"ms"}}
-                x={x} y={top+j*(barH+gap)} width={bw} height={barH} fill={p[1]} opacity="0.9" rx="1.5">
-                <title>{s.ticker+" "+["1W","1M","3M"][j]+": "+fmtPct(v)}</title>
-              </rect>;
-            })}
-          </g>
-        );
-      })}
-    </svg>
+    <div ref={containerRef}>
+      {narrow && <div className="chart-scroll-note">Scroll horizontally for readable sector labels · select a row to drill down</div>}
+      <div className="responsive-chart-scroll">
+        <svg width="100%" viewBox={"0 0 "+width+" "+h} style={{maxWidth:compact?"none":700, display:"block", width:narrow?width:"100%", minWidth:narrow?width:0}}>
+          <line x1={zeroX} x2={zeroX} y1={0} y2={h} stroke="#2a303a"/>
+          {rows.map((s,i)=>{
+            const sn = snapOf(s);
+            const top = i*rowH+(tight?4:6);
+            return (
+              <g key={s.id} className="svg-row" role={onSelectSector?"button":undefined} tabIndex={onSelectSector?0:undefined}
+                onClick={()=>onSelectSector && onSelectSector(s.id)}
+                onKeyDown={e=>{if(onSelectSector&&(e.key==="Enter"||e.key===" ")){e.preventDefault();onSelectSector(s.id);}}}>
+                <title>{s.ticker+" · 1W "+fmtPct(sn.chg_1w)+" · 1M "+fmtPct(sn.chg_1m)+" · 3M "+fmtPct(sn.chg_3m)}</title>
+                <text x={padL-8} y={top+9} fontSize={labelSize} fill="var(--text-dim)" textAnchor="end">{s.ticker}</text>
+                {periods.map((p,j)=>{
+                  const v = sn[p[0]]||0;
+                  const bw = Math.max(1.5, (Math.abs(v)/maxAbs)*half);
+                  const x = v>=0 ? zeroX : zeroX-bw;
+                  return <rect key={p[0]} className="bar-grow"
+                    style={{transformOrigin:(v>=0?"left":"right")+" center", animationDelay:(i*30+j*50)+"ms"}}
+                    x={x} y={top+j*(barH+gap)} width={bw} height={barH} fill={p[1]} opacity="0.9" rx="1.5">
+                    <title>{s.ticker+" "+["1W","1M","3M"][j]+": "+fmtPct(v)}</title>
+                  </rect>;
+                })}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
   );
 }
 
 // Grouped bars: % of constituents above the 20 / 50 / 200 MA per sector.
 function BreadthCompareBars({sectors, onSelectSector, compact=false}) {
+  const [containerRef, containerWidth] = useContainerWidth();
   if(!sectors || sectors.length===0) return <div className="empty">No data</div>;
+  const narrow = containerWidth!==null && containerWidth<520;
+  const tight = compact && !narrow;
   const periods = [["breadth_20","var(--green)"],["breadth_50","var(--accent)"],["breadth_200","var(--purple)"]];
   const valOf = (s,k)=>{ const cmd = s.command||{}; const v = cmd[k]; return v===null||v===undefined ? (k==="breadth_50" ? (snapOf(s).breadth_pct_above_50ma||0) : 0) : v; };
   const rows = [...sectors].sort((a,b)=> valOf(b,"breadth_50") - valOf(a,"breadth_50"));
-  const width=640, rowH=compact?17:24, padL=60, padR=12, barH=compact?3.4:5.5, gap=compact?1:1.5;
-  const labelSize = compact?10.5:12;
+  const width=640, rowH=narrow?28:tight?17:24, padL=60, padR=12, barH=tight?3.4:5.5, gap=tight?1:1.5;
+  const labelSize = tight?10.5:12;
   const h = rows.length*rowH+10;
   const xFor = v=> padL + (Math.max(0, Math.min(100, v))/100)*(width-padL-padR);
   return (
-    <svg width="100%" viewBox={"0 0 "+width+" "+h} style={{maxWidth:compact?"none":700, display:"block"}}>
-      {[0,25,50,75,100].map(g=>(
-        <line key={g} x1={xFor(g)} x2={xFor(g)} y1={0} y2={h} stroke="#1c2027" strokeWidth="1"/>
-      ))}
-      {rows.map((s,i)=>{
-        const top = i*rowH+(compact?4:6);
-        return (
-          <g key={s.id} className="svg-row" onClick={()=>onSelectSector && onSelectSector(s.id)}>
-            <text x={padL-8} y={top+9} fontSize={labelSize} fill="var(--text-dim)" textAnchor="end">{s.ticker}</text>
-            {periods.map((p,j)=>{
-              const v = valOf(s, p[0]);
-              const w = Math.max(1.5, xFor(v)-padL);
-              return <rect key={p[0]} className="bar-grow"
-                style={{transformOrigin:"left center", animationDelay:(i*30+j*50)+"ms"}}
-                x={padL} y={top+j*(barH+gap)} width={w} height={barH} fill={p[1]} opacity="0.9" rx="1.5">
-                <title>{s.ticker+" "+[">20MA",">50MA",">200MA"][j]+": "+v.toFixed(0)+"%"}</title>
-              </rect>;
-            })}
-          </g>
-        );
-      })}
-    </svg>
+    <div ref={containerRef}>
+      {narrow && <div className="chart-scroll-note">Scroll horizontally for readable sector labels · select a row to drill down</div>}
+      <div className="responsive-chart-scroll">
+        <svg width="100%" viewBox={"0 0 "+width+" "+h} style={{maxWidth:compact?"none":700, display:"block", width:narrow?width:"100%", minWidth:narrow?width:0}}>
+          {[0,25,50,75,100].map(g=>(
+            <line key={g} x1={xFor(g)} x2={xFor(g)} y1={0} y2={h} stroke="#1c2027" strokeWidth="1"/>
+          ))}
+          {rows.map((s,i)=>{
+            const top = i*rowH+(tight?4:6);
+            return (
+              <g key={s.id} className="svg-row" role={onSelectSector?"button":undefined} tabIndex={onSelectSector?0:undefined}
+                onClick={()=>onSelectSector && onSelectSector(s.id)}
+                onKeyDown={e=>{if(onSelectSector&&(e.key==="Enter"||e.key===" ")){e.preventDefault();onSelectSector(s.id);}}}>
+                <title>{s.ticker+" · above 20/50/200 MA: "+periods.map(p=>valOf(s,p[0]).toFixed(0)+"%").join(" / ")}</title>
+                <text x={padL-8} y={top+9} fontSize={labelSize} fill="var(--text-dim)" textAnchor="end">{s.ticker}</text>
+                {periods.map((p,j)=>{
+                  const v = valOf(s, p[0]);
+                  const w = Math.max(1.5, xFor(v)-padL);
+                  return <rect key={p[0]} className="bar-grow"
+                    style={{transformOrigin:"left center", animationDelay:(i*30+j*50)+"ms"}}
+                    x={padL} y={top+j*(barH+gap)} width={w} height={barH} fill={p[1]} opacity="0.9" rx="1.5">
+                    <title>{s.ticker+" "+[">20MA",">50MA",">200MA"][j]+": "+v.toFixed(0)+"%"}</title>
+                  </rect>;
+                })}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
   );
 }
 
@@ -1226,13 +1300,13 @@ function Sidebar({open, setOpen, current, onNavigate}) {
     {id:"screener", label:"Screener", icon:"sectors"},
   ];
   return (
-    <div className={"sidebar "+(open?"open":"collapsed")}>
+    <aside className={"sidebar "+(open?"open":"collapsed")} aria-label="Primary navigation">
       <div className="sidebar-header"
         onClick={!open ? ()=>setOpen(true) : undefined}
         style={!open ? {cursor:"pointer"} : undefined}
-        title={!open ? "Expand sidebar" : undefined}>
-        <div className={"brand-mark "+(open?"":"hidden")}><Icon.target/> <span>SECTOR SCANNER</span></div>
-        <button className="sidebar-toggle" onClick={(e)=>{ e.stopPropagation(); setOpen(!open); }} title={open?"Collapse":"Expand"}>
+        title={!open ? "Expand sidebar" : "Rotational Capital"}>
+        <div className="brand-mark"><BrandLogo/><span className="brand-wordmark">Rotational Capital</span></div>
+        <button className="sidebar-toggle" onClick={(e)=>{ e.stopPropagation(); setOpen(!open); }} title={open?"Collapse sidebar":"Expand sidebar"} aria-label={open?"Collapse sidebar":"Expand sidebar"}>
           {open ? <Icon.menu/> : <Icon.expand/>}
         </button>
       </div>
@@ -1240,7 +1314,10 @@ function Sidebar({open, setOpen, current, onNavigate}) {
         {items.map(item=>{
           const I = Icon[item.icon];
           return (
-            <div key={item.id} className={"sidebar-item "+(current===item.id?"active":"")} onClick={()=>onNavigate(item.id)}>
+            <div key={item.id} className={"sidebar-item "+(current===item.id?"active":"")}
+              role="link" tabIndex={0} aria-current={current===item.id?"page":undefined}
+              onClick={()=>onNavigate(item.id)}
+              onKeyDown={e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();onNavigate(item.id);}}}>
               <div className="sidebar-icon"><I/></div>
               {open && <span className="sidebar-label">{item.label}</span>}
               {!open && <div className="sidebar-tooltip">{item.label}</div>}
@@ -1248,19 +1325,19 @@ function Sidebar({open, setOpen, current, onNavigate}) {
           );
         })}
       </nav>
-    </div>
+    </aside>
   );
 }
 
 // ---------------------------------------------------------------------------
 // TopBar
 // ---------------------------------------------------------------------------
-function TopBar({mode, lastSynced, market, marketHistory, onSync, onRefresh, syncing, strategy, onStrategy}) {
+function TopBar({mode, lastSynced, market, marketHistory, onSync, onRefresh, syncing, strategy, onStrategy, theme, onToggleTheme}) {
   const syncLabel = mode==='live' && lastSynced
     ? "Synced "+new Date(lastSynced).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})
     : "Demo data";
   return (
-    <div className="topbar">
+    <header className="topbar">
       <div className="topbar-left">
         <div className="data-mode" title={lastSynced ? "Last live sync: "+new Date(lastSynced).toLocaleString() : "Using synthetic demo data"}>
           <span className={"data-mode-dot "+(mode==='live'?'live':'demo')}></span>
@@ -1288,12 +1365,18 @@ function TopBar({mode, lastSynced, market, marketHistory, onSync, onRefresh, syn
               onClick={()=>onStrategy(s.id)}>{s.label}</button>
           ))}
         </div>
-        <button className="btn" onClick={onRefresh}><Icon.refresh/> Reset Demo</button>
-        <button className="btn primary" onClick={onSync} disabled={syncing}>
-          <Icon.cloud/> {syncing ? "Syncing…" : "Sync Live Data"}
+        <button className="theme-toggle" onClick={onToggleTheme}
+          aria-label={theme==="dark"?"Switch to light theme":"Switch to dark theme"}
+          title={theme==="dark"?"Switch to light theme":"Switch to dark theme"}
+          aria-pressed={theme==="light"}>
+          {theme==="dark" ? <Icon.sun/> : <Icon.moon/>}
+        </button>
+        <button className="btn" onClick={onRefresh} title="Reset Demo"><Icon.refresh/><span className="btn-label">Reset Demo</span></button>
+        <button className="btn primary" onClick={onSync} disabled={syncing} title={syncing?"Syncing live data":"Sync Live Data"}>
+          <Icon.cloud/><span className="btn-label">{syncing ? "Syncing…" : "Sync Live Data"}</span>
         </button>
       </div>
-    </div>
+    </header>
   );
 }
 
@@ -2169,7 +2252,7 @@ function Dashboard({data, onSelectSector, onSelectIndustry, config}) {
 
       <div className="section-title">Market Overview</div>
       <div className="anim-fade-up"><MarketSummary market={data.market_summary}/></div>
-      <div className="grid-2">
+      <div className="grid-2 market-overview-grid">
         <div className="panel anim-fade-up" style={{animationDelay:"60ms"}}>
           <div className="panel-title">
             <span>Benchmark Trend — Composite</span>
@@ -2191,7 +2274,7 @@ function Dashboard({data, onSelectSector, onSelectIndustry, config}) {
       </div>
 
       <div className="section-title">Sector Scoreboard</div>
-      <div className="grid-2">
+      <div className="grid-2 scoreboard-grid">
         <div className="panel">
           <div className="panel-title">
             <span>Composite Score by Sector</span>
@@ -6219,7 +6302,8 @@ function App() {
   const [sectorId, setSectorId] = useState(null);
   const [industry, setIndustry] = useState(null);
   const [industrySectorId, setIndustrySectorId] = useState(null); // sector the industry was opened from (Back target)
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(()=>window.innerWidth>720);
+  const [theme, setTheme] = useState(()=>document.documentElement.dataset.theme==="light"?"light":"dark");
   const [strategy, setStrategy] = useState("qullamaggie"); // qullamaggie
   const [dashboard, dashLoading] = useApi(apiUrl("/api/dashboard", strategy), [strategy]);
   const [config] = useApi("/api/config", []);
@@ -6234,6 +6318,13 @@ function App() {
   }
 
   useEffect(()=>{ fetchStatus(); }, []);
+
+  useEffect(()=>{
+    document.documentElement.dataset.theme=theme;
+    const meta=document.querySelector('meta[name="theme-color"]');
+    if(meta) meta.setAttribute("content", theme==="dark"?"#0d0f12":"#f5f2ec");
+    try{ localStorage.setItem("rc-theme",theme); }catch(e){}
+  },[theme]);
 
   useEffect(()=>{
     if(!polling) return;
@@ -6288,35 +6379,39 @@ function App() {
   const dashboardData = dashboard ? {...dashboard, refreshKey} : null;
 
   return (
-    <div className="app">
-      <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} current={view} onNavigate={onNavigate}/>
-      <div className={"main "+(sidebarOpen?"sidebar-open":"sidebar-collapsed")}>
-        <TopBar
-          mode={dashboardData?.mode || "demo"}
-          lastSynced={dashboardData?.last_synced}
-          market={dashboardData?.market_summary}
-          marketHistory={dashboardData?.market_history}
-          onSync={doSync}
-          onRefresh={doRefresh}
-          syncing={syncStatus?.running || false}
-          strategy={strategy}
-          onStrategy={setStrategy}
-        />
-        <div className="content">
-          {dashLoading && <div className="loading">Loading…</div>}
-          {!dashLoading && view==="dashboard" && <Dashboard data={dashboardData} onSelectSector={onSelectSector} onSelectIndustry={onSelectIndustry} config={config}/>}
-          {!dashLoading && view==="sectors" && dashboardData && <AllSectorsPage sectors={dashboardData.sectors} onSelectSector={onSelectSector} onSelectIndustry={onSelectIndustry} strategy={strategy}/>}
-          {!dashLoading && view==="industries" && <IndustriesPage onSelectIndustry={onSelectIndustry} strategy={strategy} wl={wl}/>}
-          {!dashLoading && view==="etf" && <ETFHubView/>}
-          {!dashLoading && view==="watchlist" && <WatchlistPage wl={wl}/>}
-          {view==="ep" && <EpSection/>}
-          {!dashLoading && view==="screener" && <ScreenerView strategy={strategy} wl={wl}/>}
-          {!dashLoading && view==="sector" && <SectorDetail sectorId={sectorId} onBack={()=>setView("dashboard")} onSelectIndustry={onSelectIndustry} strategy={strategy} wl={wl}/>}
-          {!dashLoading && view==="industry" && <IndustryDetail industry={industry} onBack={onIndustryBack} onSelectSector={onSelectSector} strategy={strategy} wl={wl}/>}
+    <ThemeContext.Provider value={theme}>
+      <div className="app">
+        <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} current={view} onNavigate={onNavigate}/>
+        <div className={"main "+(sidebarOpen?"sidebar-open":"sidebar-collapsed")}>
+          <TopBar
+            mode={dashboardData?.mode || "demo"}
+            lastSynced={dashboardData?.last_synced}
+            market={dashboardData?.market_summary}
+            marketHistory={dashboardData?.market_history}
+            onSync={doSync}
+            onRefresh={doRefresh}
+            syncing={syncStatus?.running || false}
+            strategy={strategy}
+            onStrategy={setStrategy}
+            theme={theme}
+            onToggleTheme={()=>setTheme(t=>t==="dark"?"light":"dark")}
+          />
+          <main className="content">
+            {dashLoading && <div className="loading">Loading…</div>}
+            {!dashLoading && view==="dashboard" && <Dashboard data={dashboardData} onSelectSector={onSelectSector} onSelectIndustry={onSelectIndustry} config={config}/>}
+            {!dashLoading && view==="sectors" && dashboardData && <AllSectorsPage sectors={dashboardData.sectors} onSelectSector={onSelectSector} onSelectIndustry={onSelectIndustry} strategy={strategy}/>}
+            {!dashLoading && view==="industries" && <IndustriesPage onSelectIndustry={onSelectIndustry} strategy={strategy} wl={wl}/>}
+            {!dashLoading && view==="etf" && <ETFHubView/>}
+            {!dashLoading && view==="watchlist" && <WatchlistPage wl={wl}/>}
+            {view==="ep" && <EpSection/>}
+            {!dashLoading && view==="screener" && <ScreenerView strategy={strategy} wl={wl}/>}
+            {!dashLoading && view==="sector" && <SectorDetail sectorId={sectorId} onBack={()=>setView("dashboard")} onSelectIndustry={onSelectIndustry} strategy={strategy} wl={wl}/>}
+            {!dashLoading && view==="industry" && <IndustryDetail industry={industry} onBack={onIndustryBack} onSelectSector={onSelectSector} strategy={strategy} wl={wl}/>}
+          </main>
         </div>
+        {showSyncPanel && <SyncPanel status={syncStatus} onClose={()=>setShowSyncPanel(false)}/>}
       </div>
-      {showSyncPanel && <SyncPanel status={syncStatus} onClose={()=>setShowSyncPanel(false)}/>}
-    </div>
+    </ThemeContext.Provider>
   );
 }
 
