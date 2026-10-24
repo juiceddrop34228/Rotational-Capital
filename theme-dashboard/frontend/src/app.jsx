@@ -247,78 +247,32 @@ function ScoreBar({value}) {
   );
 }
 
-// Stock score: performance (15% 1W + 50% 1M + 35% 3M), min-max normalized
-// to 0-100 across the stocks in the list being displayed. With adrWeight,
-// blends in ADR: score = (1-adrWeight)*perf + adrWeight*ADR, each input
-// normalized separately. Returns new objects with `_score` attached.
-function withStockScores(stocks, adrWeight=0){
+// ---------------------------------------------------------------------------
+// Relative Strength score (0-100): each stock is ranked against the other
+// stocks in the list — which is always the eligibility-filtered universe for
+// the view being displayed — using a performance composite of 15% 1W + 50% 1M
+// + 35% 3M returns. The score is the stock's percentile rank within this
+// accepted pool (higher = stronger relative price performance). Returns new
+// objects with `_score` attached. Used for the Screener and industry stock
+// tables; mirrors engine.score_and_rank on the backend.
+// ---------------------------------------------------------------------------
+function rsScore(stocks){
   if(!stocks || !stocks.length) return stocks || [];
-  const raw = s=> 0.15*(s.chg_1w||0) + 0.50*(s.chg_1m||0) + 0.35*(s.chg_3m||0);
-  const norm = vals=>{
-    const mn = Math.min(...vals), span = (Math.max(...vals)-mn) || 1;
-    return vals.map(v=> (v-mn)/span*100);
-  };
-  const perfN = norm(stocks.map(raw));
-  let adrN = null;
-  if(adrWeight>0){
-    const adrs = stocks.map(s=> s.adr_pct);
-    if(adrs.some(v=> v!=null)){
-      const known = adrs.filter(v=> v!=null);
-      adrN = norm(adrs.map(v=> v!=null ? v : known.reduce((a,b)=>a+b,0)/known.length));
-    }
-  }
+  const perf = s=> 0.15*(s.chg_1w||0) + 0.50*(s.chg_1m||0) + 0.35*(s.chg_3m||0);
+  const vals = stocks.map(perf);
+  const n = vals.length;
   return stocks.map((s,i)=>{
-    const sc = adrN ? (1-adrWeight)*perfN[i] + adrWeight*adrN[i] : perfN[i];
-    return {...s, _score: Math.round(sc*10)/10};
+    const below = vals.reduce((c,v)=> c + (v <= vals[i] ? 1 : 0), 0);
+    return {...s, _score: Math.round(below/n*1000)/10};
   });
 }
+const withStockScores = rsScore;
+const withMomentumScores = rsScore;
 
-// ---------------------------------------------------------------------------
-// Screener momentum model — 90% returns (8% 1W + 40% 1M + 40% 3M + 2% 6M)
-// with 10% split between average daily range and 10-EMA extension. Returns and
-// extension are min-max normalized; ADR uses an absolute scale that reaches 100
-// at 5%. Used only by the Screener section (other views keep the plain
-// performance score above).
-// ---------------------------------------------------------------------------
-const MOM_WEIGHTS = [
-  ["1W",  s=> s.chg_1w,   0.08],
-  ["1M",  s=> s.chg_1m,   0.40],
-  ["3M",  s=> s.chg_3m,   0.40],
-  ["6M",  s=> s.chg_6m,   0.02],
-  ["ADR", s=> s.adr_pct,  0.07, _adrScoreVals],
-  ["EXT", s=> extVsEma10(s), 0.03],
-];
 function extVsEma10(s){
   if(s.ext_ema10!=null) return s.ext_ema10;
   if(s.price!=null && s.ema10) return (s.price/s.ema10-1)*100;
   return null;
-}
-function _normVals(vals){
-  const known = vals.filter(v=> v!=null && !isNaN(v));
-  if(!known.length) return vals.map(()=>null);
-  const fill = avg(known);
-  const mn = Math.min(...known), span = (Math.max(...known)-mn)||1;
-  return vals.map(v=> (((v==null||isNaN(v)) ? fill : v)-mn)/span*100);
-}
-function _adrScoreVals(vals){
-  const known = vals.filter(v=> v!=null && !isNaN(v));
-  const fill = known.length ? avg(known) : null;
-  return vals.map(v=>{
-    const adr = (v==null||isNaN(v)) ? fill : v;
-    return adr==null ? null : Math.max(0, Math.min(100, adr/5*100));
-  });
-}
-function withMomentumScores(stocks){
-  if(!stocks || !stocks.length) return stocks || [];
-  const cols = MOM_WEIGHTS.map(([,get,,norm=_normVals])=> norm(stocks.map(get)));
-  return stocks.map((s,i)=>{
-    let acc=0, wsum=0;
-    MOM_WEIGHTS.forEach((m,ci)=>{
-      const v = cols[ci][i];
-      if(v!=null){ acc += v*m[2]; wsum += m[2]; }
-    });
-    return {...s, _score: Math.round((wsum ? acc/wsum : 0)*10)/10};
-  });
 }
 
 function AreaChart({series, width=640, height=220, pad=32, colors, yDomain}) {
@@ -359,8 +313,8 @@ function RRGChart({paths, midX=100, midY=0, labels}) {
   paths = paths.map(p=>({...p, points: p.points.slice(-TRAIL_LEN)}));
   const allX = paths.flatMap(p=>p.points.map(pt=>pt.x));
   const allY = paths.flatMap(p=>p.points.map(pt=>pt.y));
-  const rangeX = Math.max(20, Math.max(...allX.map(v=>Math.abs(v-midX)))*1.3);
-  const rangeY = Math.max(10, Math.max(...allY.map(v=>Math.abs(v-midY)))*1.3);
+  const rangeX = Math.max(6, Math.max(...allX.map(v=>Math.abs(v-midX)))*1.3);
+  const rangeY = Math.max(3, Math.max(...allY.map(v=>Math.abs(v-midY)))*1.3);
   const xFor = (v)=> w/2 + ((v-midX)/rangeX)*(w/2-pad);
   const yFor = (v)=> h/2 - ((v-midY)/rangeY)*(h/2-pad);
   return (
@@ -1797,7 +1751,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
     avg_volatility_d: avg(stocks.map(s=>s.volatility_d||0)),
     avg_recommend_all: avg(stocks.map(s=>s.recommend_all||0)),
   };
-  const sorted = sort.apply(withStockScores(stocks, 0.2), IND_STOCK_SORT_KEYS);
+  const sorted = sort.apply(withStockScores(stocks), IND_STOCK_SORT_KEYS);
   const indTotalPages = Math.max(1, Math.ceil(sorted.length / DRILL_PAGE_SIZE));
   const indCurPage = Math.min(page, indTotalPages);
   const indPageRows = sorted.slice((indCurPage-1)*DRILL_PAGE_SIZE, indCurPage*DRILL_PAGE_SIZE);
@@ -1937,7 +1891,7 @@ function IndustryDetail({industry, onBack, onSelectSector, strategy, wl}) {
                 <SortTh label="Sector" k="sector" sort={indSortCtl}/>
                 <SortTh label="Price" k="price" sort={indSortCtl}/>
                 <SortTh label="Mkt Cap" k="mcap" sort={indSortCtl}/>
-                <SortTh label="Score" k="score" sort={indSortCtl} title="80% performance (15% 1W / 50% 1M / 35% 3M) + 20% ADR, each min-max normalized 0-100 across these constituents"/>
+                <SortTh label="Score" k="score" sort={indSortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within this eligibility-filtered universe; higher = stronger relative performance"/>
                 <SortTh label="1D" k="chg_1d" sort={indSortCtl}/>
                 <SortTh label="1W" k="chg_1w" sort={indSortCtl}/>
                 <SortTh label="1M" k="chg_1m" sort={indSortCtl}/>
@@ -2155,6 +2109,7 @@ function IndexPanel({idx, order}) {
 }
 
 function Dashboard({data, onSelectSector, onSelectIndustry, config}) {
+  const [rrg] = useApi("/api/rrg", []);
   if(!data) return <div className="loading">Loading dashboard…</div>;
   // Every page uses snapshot.score — the canonical CCI-based sector score
   // (50% performance + 50% CCI).
@@ -2169,19 +2124,25 @@ function Dashboard({data, onSelectSector, onSelectIndustry, config}) {
     {label:"Fading", value:counts.fading, color:"var(--red)"},
     {label:"Lagging", value:counts.lagging, color:"#7a8494"},
   ].filter(s=>s.value>0);
-  // RRG-style trails for every sector: x = relative strength (avg RS rating
-  // rebased around 100), y = per-snapshot score momentum. Same construction
-  // as the per-sector RRG on the sector detail page.
-  const sectorRrgPaths = sectors.map(s=>{
-    const hist = (s.history||[]).slice(-12);
-    if(hist.length<2) return null;
-    const pts = hist.map((h,i)=>({
-      x: 95 + (((h.avg_rs_rating??50) - 50)*0.6),
-      y: (((h.score??0) - (hist[i-1]?.score ?? h.score ?? 0))*3),
-      dt: h.dt,
-    }));
-    return {etf: s.ticker, color: s.color || "var(--accent)", points: pts};
-  }).filter(Boolean);
+  // RRG trails: JDK-style RS-Ratio (x) / RS-Momentum (y) of each sector's
+  // benchmark ETF vs SPY on closed weekly bars, from /api/rrg — centered on
+  // (100,100). Falls back to the snapshot-derived approximation while the
+  // endpoint has no data yet.
+  let rrgMid = {x: 100, y: 100};
+  let sectorRrgPaths = (rrg && rrg.paths) || [];
+  if(!sectorRrgPaths.length){
+    rrgMid = {x: 100, y: 0};
+    sectorRrgPaths = sectors.map(s=>{
+      const hist = (s.history||[]).slice(-12);
+      if(hist.length<2) return null;
+      const pts = hist.map((h,i)=>({
+        x: 95 + (((h.avg_rs_rating??50) - 50)*0.6),
+        y: (((h.score??0) - (hist[i-1]?.score ?? h.score ?? 0))*3),
+        dt: h.dt,
+      }));
+      return {etf: s.ticker, color: s.color || "var(--accent)", points: pts};
+    }).filter(Boolean);
+  }
   return (
     <div className="page">
       <div className="page-header">
@@ -2217,8 +2178,9 @@ function Dashboard({data, onSelectSector, onSelectIndustry, config}) {
         <div className="panel anim-fade-up" style={{animationDelay:"90ms"}}>
           <div className="panel-title">
             <span>Relative Rotation Graph — All Sectors</span>
+            <span className="hint">Weekly RS-Ratio / RS-Momentum vs SPY · 8-week trails</span>
           </div>
-          <RRGChart paths={sectorRrgPaths}/>
+          <RRGChart paths={sectorRrgPaths} midX={rrgMid.x} midY={rrgMid.y}/>
         </div>
       </div>
 
@@ -2308,7 +2270,7 @@ function HoldingsTable({holdings, filter, chartsOn=false, layout=null, wl=null})
             <SortTh label="Price" k="price" sort={sortCtl}/>
             <SortTh label="Mkt Cap" k="mcap" sort={sortCtl}/>
             <SortTh label="Avg Vol" k="avgvol" sort={sortCtl}/>
-            <SortTh label="Score" k="score" sort={sortCtl} title="Performance score: 15% 1W + 50% 1M + 35% 3M, normalized 0-100 across these constituents (same weighting as the industry leadership score)"/>
+            <SortTh label="Score" k="score" sort={sortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within this eligibility-filtered universe; higher = stronger relative performance"/>
             <SortTh label="1D" k="chg_1d" sort={sortCtl}/>
             <SortTh label="1W" k="chg_1w" sort={sortCtl}/>
             <SortTh label="1M" k="chg_1m" sort={sortCtl}/>
@@ -2731,7 +2693,7 @@ function ScreenerDashboard({stocks, wl}) {
 
 function ScreenerView({strategy, wl}) {
   const [data, loading, , err] = useApi(apiUrl("/api/screener", strategy), [strategy]);
-  const sort = useSortable((a,b)=> (a.rank_3m||1e9) - (b.rank_3m||1e9));
+  const sort = useSortable((a,b)=> (b._score||0) - (a._score||0));
   const [page, setPage] = useState(1);
   const [chartsOn, setChartsOn] = useState(false);
   const [chartLayout, updateChartLayout] = useChartLayout();
@@ -2782,7 +2744,7 @@ function ScreenerView({strategy, wl}) {
                 <SortTh label="Price" k="price" sort={sortCtl}/>
                 <SortTh label="Mkt Cap" k="mcap" sort={sortCtl}/>
                 <SortTh label="Avg Vol" k="avgvol" sort={sortCtl}/>
-                <SortTh label="Score" k="score" sort={sortCtl} title="Composite momentum score (0-100): 90% returns (8% 1W, 40% 1M, 40% 3M, 2% 6M), 7% ADR (scores 100 at 5% or higher), and 3% price extension vs the 10 EMA"/>
+                <SortTh label="Score" k="score" sort={sortCtl} title="Relative Strength score: percentile rank (0-100) of the performance composite (15% 1W / 50% 1M / 35% 3M) within the stocks passing the screener eligibility filters; higher = stronger relative performance"/>
                 <SortTh label="1D" k="chg_1d" sort={sortCtl}/>
                 <SortTh label="1W" k="chg_1w" sort={sortCtl}/>
                 <SortTh label="1M" k="chg_1m" sort={sortCtl}/>

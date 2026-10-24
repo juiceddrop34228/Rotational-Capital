@@ -936,6 +936,25 @@ def etf_emas(symbol: str):
     return data
 
 
+@app.get("/api/rrg")
+@cached_get(ttl=1800)
+def sector_rrg():
+    """JDK-style Relative Rotation Graph trails for every sector's benchmark
+    ETF vs SPY (closed weekly bars, ~8-week tails). Powers the Markets-page
+    RRG. x = RS-Ratio, y = RS-Momentum, both centered on 100."""
+    import live_data
+    trails = live_data.compute_sector_rrg()
+    conn = _mk_conn()
+    rows = conn.execute("SELECT name, ticker, color FROM sector").fetchall()
+    conn.close()
+    meta = {r["name"]: (r["ticker"], r["color"]) for r in rows}
+    paths = []
+    for name, t in trails.items():
+        ticker, color = meta.get(name, (t["etf"], None))
+        paths.append({"etf": ticker, "benchmarkEtf": t["etf"], "color": color, "points": t["points"]})
+    return {"benchmark": BENCHMARK_TICKER, "mid": 100, "paths": paths}
+
+
 @app.get("/api/sectors")
 def list_sectors(strategy: str = None):
     conn = _mk_conn()
@@ -1026,7 +1045,7 @@ def screener(strategy: str = None):
 
     add_rank("chg_3m", "rank_3m")
     add_rank("chg_6m", "rank_6m")
-    # score_and_rank already ordered by the strategy composite; keep that order
+    # score_and_rank already ordered by the within-universe RS score; keep that order
     return {
         "count": len(stocks),
         "strategy": strategy,

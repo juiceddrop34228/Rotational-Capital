@@ -19,6 +19,8 @@ the scanner API) — the exact numbers shown on the website for every horizon
 computed from the filtered stock universe in each sector/industry.
 """
 
+import csv
+import io
 import time
 from datetime import datetime, date, timezone
 
@@ -721,6 +723,59 @@ def fetch_sector_etf_cci(progress_cb=None):
     return out
 
 
+def compute_sector_rrg(tail=8, window=10):
+    """JDK-style Relative Rotation Graph trails for the 20 sector ETFs
+    (SECTOR_ETF_MAP) vs SPY, on closed weekly bars:
+
+        RS          = 100 * ETF / SPY
+        RS-Ratio    = 100 + (RS - SMA_w(RS)) / SMA_w(RS) * 100
+        RS-Momentum = same transform applied to RS-Ratio
+
+    (the standard 10-period approximation of the proprietary JDK
+    normalization). The current, still-open week is dropped so trails only
+    use closed bars — this keeps the graph smooth instead of jittering
+    intraday. Returns {sector_name: {"etf": ticker, "points": [{x, y, dt}]
+    oldest->newest, up to `tail` weeks}}. Uses the cached hub-ETF daily bars,
+    so no extra downloads."""
+    import pandas as pd  # noqa: F401
+
+    frames = fetch_hub_etf_bars(list(SECTOR_ETF_MAP.values()))
+    spy = frames.get(BENCHMARK_TICKER)
+    if spy is None or not len(spy):
+        return {}
+    spy_w = spy["Close"].resample("W-FRI").last().dropna()
+    today = date.today()
+    out = {}
+    for sector, etf in SECTOR_ETF_MAP.items():
+        df = frames.get(etf)
+        if df is None or not len(df):
+            continue
+        w = df["Close"].resample("W-FRI").last().dropna()
+        idx = w.index.intersection(spy_w.index)
+        if len(idx) < window * 2 + 2:
+            continue
+        rs = 100 * w.loc[idx] / spy_w.loc[idx]
+        rs_ma = rs.rolling(window).mean()
+        rsr = 100 + (rs - rs_ma) / rs_ma * 100
+        rsr_ma = rsr.rolling(window).mean()
+        rsm = 100 + (rsr - rsr_ma) / rsr_ma * 100
+        pts = rsr.to_frame("x").join(rsm.to_frame("y")).dropna()
+        if len(pts) and pts.index[-1].date() >= today:
+            pts = pts.iloc[:-1]  # current week still forming
+        pts = pts.iloc[-tail:]
+        if len(pts) < 2:
+            continue
+        out[sector] = {
+            "etf": etf,
+            "points": [
+                {"x": round(float(r["x"]), 2), "y": round(float(r["y"]), 2),
+                 "dt": str(ts.date())}
+                for ts, r in pts.iterrows()
+            ],
+        }
+    return out
+
+
 def fetch_industry_etf_cci(progress_cb=None, frames=None):
     """CCI(34) daily oscillator + its EMA(13) for every mapped industry's
     benchmark ETF (INDUSTRY_ETF_MAP). This is the "industry CCI" the industry
@@ -813,14 +868,92 @@ def fetch_industry_ma_signals(frames=None, progress_cb=None, lookback=5):
     return out
 
 
-def compute_rs_ratings(stocks):
-    """RS rating = percentile rank of 3-month performance across the universe."""
-    vals = sorted(m["chg_3m"] for m in stocks)
-    n = len(vals)
+# Daily-updated RS ratings published by the author of the TradingView RS
+# Rating indicator (https://www.tradingview.com/script/pziQwiT2/). The
+# indicator itself ranks against this dataset, so copying it makes our
+# per-stock score the exact value shown on TradingView.
+RS_RATINGS_CSV_URL = "https://raw.githubusercontent.com/Fred6725/rs-log/main/output/rs_stocks.csv"
+_rs_ratings_cache = {"at": 0.0, "data": {}}
+_RS_RATINGS_TTL = 6 * 3600.0
+
+
+def fetch_tv_rs_ratings():
+    """{ticker: 0-99 RS percentile} from the RS Rating indicator's own daily
+    dataset (Fred6725/rs-log on GitHub, ~6100 US stocks, weekday updates).
+    Tickers are stored in both Yahoo (BRK-B) and TradingView (BRK.B) forms so
+    scanner symbols match directly. Cached for 6h; on failure the last good
+    map is kept ({} if none yet)."""
+    now = time.time()
+    if _rs_ratings_cache["data"] and now - _rs_ratings_cache["at"] < _RS_RATINGS_TTL:
+        return _rs_ratings_cache["data"]
+    out = {}
+    try:
+        resp = requests.get(RS_RATINGS_CSV_URL, headers=REQUEST_HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        reader = csv.DictReader(io.StringIO(resp.text))
+        for row in reader:
+            t = (row.get("Ticker") or "").strip()
+            p = row.get("Percentile")
+            if not t or p in (None, ""):
+                continue
+            try:
+                val = max(1.0, min(99.0, float(p)))
+            except ValueError:
+                continue
+            out[t] = val
+            out[t.replace("-", ".")] = val  # TradingView form of class shares
+    except Exception:
+        return _rs_ratings_cache["data"]
+    if out:
+        _rs_ratings_cache["at"] = now
+        _rs_ratings_cache["data"] = out
+    return _rs_ratings_cache["data"]
+
+
+def _ibd_rs_score(m):
+    """IBD-style weighted performance used by the RS Rating indicator:
+    40%*P3 + 20%*P6 + 20%*P9 + 20%*P12. The TradingView scanner has no 9M
+    performance column, so P9 is approximated by the 6M/12M midpoint; missing
+    horizons fall back to the nearest available one."""
+    p3 = m.get("chg_3m")
+    p6 = m.get("chg_6m")
+    p12 = m.get("chg_1y")
+    if p3 is None:
+        p3 = p6 if p6 is not None else (p12 or 0.0)
+    if p6 is None:
+        p6 = p3
+    if p12 is None:
+        p12 = p6
+    p9 = (p6 + p12) / 2.0
+    return 0.4 * p3 + 0.2 * p6 + 0.2 * p9 + 0.2 * p12
+
+
+def compute_rs_ratings(stocks, tv_ratings=None):
+    """RS rating per stock. Primary source: the TradingView RS Rating
+    indicator's own published percentiles (`tv_ratings` from
+    fetch_tv_rs_ratings), so the value matches the indicator exactly and is
+    universal across every page. Stocks missing from that dataset (and all
+    stocks when it is unavailable) fall back to a percentile rank of the
+    IBD-style weighted score (40%*3M + 20%*6M + 20%*9M + 20%*12M) across our
+    own universe. Returns (stocks, n_matched_from_tv_dataset)."""
+    if tv_ratings is None:
+        tv_ratings = {}
+    matched, fallback = 0, []
     for m in stocks:
-        below = sum(1 for v in vals if v <= m["chg_3m"])
-        m["rs_rating"] = round(max(1, min(99, below / n * 100)), 1) if n else 50.0
-    return stocks
+        val = tv_ratings.get(m["ticker"])
+        if val is not None:
+            m["rs_rating"] = round(val, 1)
+            matched += 1
+        else:
+            fallback.append(m)
+    if fallback:
+        vals = sorted(_ibd_rs_score(m) for m in fallback)
+        n = len(vals)
+        for m in fallback:
+            s = _ibd_rs_score(m)
+            below = sum(1 for v in vals if v <= s)
+            m["rs_rating"] = round(max(1, min(99, below / n * 100)), 1) if n else 50.0
+    return stocks, matched
 
 
 # ---------------------------------------------------------------------------
@@ -1044,9 +1177,15 @@ def sync_all(progress_cb=None):
     if not bench:
         report["errors"].append("SPY benchmark metrics unavailable")
 
-    # 3. RS ratings (3M-based) + RS vs SPY
-    log("Computing RS ratings (3-month relative strength)...")
-    compute_rs_ratings(stocks)
+    # 3. RS ratings — the exact percentiles published by the TradingView RS
+    # Rating indicator's own dataset, with an IBD-weighted local fallback —
+    # plus RS vs SPY
+    log("Fetching RS ratings (TradingView RS Rating dataset)...")
+    tv_rs = fetch_tv_rs_ratings()
+    _, rs_matched = compute_rs_ratings(stocks, tv_rs)
+    log("RS ratings: %d/%d stocks matched the TradingView RS Rating dataset%s."
+        % (rs_matched, len(stocks),
+           "" if tv_rs else " (dataset unavailable — local IBD-weighted fallback for all)"))
     for m in stocks:
         m["rs_vs_spy_1m"] = round(m["chg_1m"] - spy_1m, 2)
 

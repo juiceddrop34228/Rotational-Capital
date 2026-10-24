@@ -55,16 +55,29 @@ def test_tv_row_no_price():
 
 
 def test_compute_rs_ratings():
-    print("test_compute_rs_ratings (3M-based)...", end=" ")
+    print("test_compute_rs_ratings (IBD-weighted fallback)...", end=" ")
     stocks = [
         {"ticker": "AAA", "chg_3m": 30},
         {"ticker": "BBB", "chg_3m": -10},
         {"ticker": "CCC", "chg_3m": 5},
         {"ticker": "DDD", "chg_3m": 50},
     ]
-    out = {m["ticker"]: m for m in ld.compute_rs_ratings(stocks)}
+    out_list, matched = ld.compute_rs_ratings(stocks, {})
+    assert matched == 0
+    out = {m["ticker"]: m for m in out_list}
     assert out["DDD"]["rs_rating"] == 99  # top performer, capped at 99
     assert out["BBB"]["rs_rating"] < out["CCC"]["rs_rating"] < out["AAA"]["rs_rating"] < out["DDD"]["rs_rating"]
+    print("OK ->", {k: v["rs_rating"] for k, v in out.items()})
+
+    # TradingView dataset values win verbatim over the local fallback
+    print("test_compute_rs_ratings (TradingView dataset)...", end=" ")
+    out_list, matched = ld.compute_rs_ratings(
+        [{"ticker": "AAA", "chg_3m": 30}, {"ticker": "ZZZ", "chg_3m": 1}],
+        {"AAA": 87.3},
+    )
+    out = {m["ticker"]: m for m in out_list}
+    assert matched == 1 and out["AAA"]["rs_rating"] == 87.3
+    assert 1 <= out["ZZZ"]["rs_rating"] <= 99
     print("OK ->", {k: v["rs_rating"] for k, v in out.items()})
 
 
@@ -73,21 +86,19 @@ def test_score_and_rank_swing():
     import engine
     base = {
         "market_cap_musd": 5000, "avg_volume": 2_000_000, "price": 50.0,
-        "rs_rating": 90, "chg_1m": 10, "chg_3m": 30, "pct_from_52w_high": -2.0,
-        "volume_ratio": 2.0, "above_20d": 1, "above_50d": 1, "above_200d": 1,
-        "dist_high_1m": -1.0, "dist_high_3m": -2.0, "ext_ema10": 3.0, "volatility_d": 3.0,
+        "rs_rating": 90, "chg_1w": 2, "chg_1m": 10, "chg_3m": 30,
     }
     strong = dict(base, stock_ticker="AAA")
-    extended = dict(base, stock_ticker="BBB", ext_ema10=25.0)   # chasing -> penalty
-    weak = dict(base, stock_ticker="CCC", rs_rating=20, chg_1m=-15, pct_from_52w_high=-40,
-                volume_ratio=0.6, above_20d=0, above_50d=0, dist_high_1m=-30, dist_high_3m=-35)
-    ranked, excluded = engine.score_and_rank([weak, extended, strong])
+    mid = dict(base, stock_ticker="BBB", chg_1w=0, chg_1m=4, chg_3m=12)
+    weak = dict(base, stock_ticker="CCC", rs_rating=20, chg_1w=-3, chg_1m=-15, chg_3m=-20)
+    ranked, excluded = engine.score_and_rank([weak, mid, strong])
     assert excluded == 0 and len(ranked) == 3
-    assert ranked[0]["stock_ticker"] == "AAA", ranked
-    assert ranked[-1]["stock_ticker"] == "CCC"
-    assert strong["score"] > extended["score"] > weak["score"]
+    assert [r["stock_ticker"] for r in ranked] == ["AAA", "BBB", "CCC"]
+    assert strong["score"] > mid["score"] > weak["score"]
+    assert strong["score"] == 100.0  # top of the eligible pool
     assert all(0 <= r["score"] <= 100 for r in ranked)
     assert ranked[0]["classification"] == "leader"
+    assert ranked[-1]["classification"] == "laggard"
     print("OK ->", {r["stock_ticker"]: r["score"] for r in ranked})
 
 
