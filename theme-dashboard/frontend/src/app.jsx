@@ -169,8 +169,8 @@ const Icon = {
 function BrandLogo(){
   return (
     <svg className="brand-logo" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-      <path d="M8 3v5M8 23v6" stroke="#6f9fd2" strokeWidth="2"/>
-      <rect x="4.5" y="8" width="7" height="15" rx="1" fill="#6f9fd2"/>
+      <path d="M8 3v5M8 23v6" stroke="#f97316" strokeWidth="2"/>
+      <rect x="4.5" y="8" width="7" height="15" rx="1" fill="#f97316"/>
       <path d="M23 3v7M23 24v5" stroke="var(--text)" strokeWidth="2"/>
       <rect x="19.5" y="10" width="7" height="14" rx="1" fill="var(--text)"/>
     </svg>
