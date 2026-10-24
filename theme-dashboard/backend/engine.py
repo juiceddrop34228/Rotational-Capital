@@ -1819,68 +1819,30 @@ def cci_market_factor(conn):
 
 
 def score_and_rank(holdings_with_stock, strategy=STRATEGY_DEFAULT, cci_factor=50.0):
-    """Composite setup score (0-100) over the shared factor framework, using the
-    Qullamaggie strategy weights. CCI (market regime) is a compulsory input
-    (fixed 10% weight); the remaining factors are 1M/3M momentum leadership,
-    tightness near highs, trend alignment and volume, minus extension and
-    volatility penalties. Classifies leader/neutral/laggard by decile."""
-    if strategy not in STRATEGY_DEFS:
-        strategy = STRATEGY_DEFAULT
-    cfg = STRATEGY_DEFS[strategy]
-    W = cfg["w"]
+    """Relative Strength score (0-100) computed within the eligible universe.
+
+    Only stocks passing the eligibility filters are considered. Each accepted
+    stock is ranked against the other accepted stocks by a performance composite
+    (15% 1W + 50% 1M + 35% 3M return); the score is that percentile rank, so a
+    higher score means stronger price performance relative to the rest of the
+    eligible pool and the list is ordered strongest-first. Classifies
+    leader/neutral/laggard by decile. The strategy/cci_factor parameters are
+    kept for caller compatibility but no longer influence the score."""
     filtered = apply_filters(holdings_with_stock)
     excluded_count = len(holdings_with_stock) - len(filtered)
 
     if not filtered:
         return [], excluded_count
 
-    mom1m_vals = [r["chg_1m"] for r in filtered]
-    high_vals = [r["pct_from_52w_high"] for r in filtered]
-    vol_vals = [r["volume_ratio"] for r in filtered]
+    def perf(r):
+        return (PERF_W_1W * (r.get("chg_1w") or 0.0)
+                + PERF_W_1M * (r.get("chg_1m") or 0.0)
+                + PERF_W_3M * (r.get("chg_3m") or 0.0))
 
-    def breakout_points(r):
-        # Proximity to the 1M/3M high: full points within 3%, fading to 0 at 15%+ below.
-        dists = [d for d in (r.get("dist_high_1m"), r.get("dist_high_3m")) if d is not None]
-        if dists:
-            dist = max(dists)  # closest to a pivot high
-        else:
-            dist = r["pct_from_52w_high"]
-        if dist is None:
-            return 50.0
-        return max(0.0, min(100.0, (15 + dist) / 15 * 100))  # dist<=0
-
-    def extension_penalty(r):
-        # Chasing risk: penalize extension above the EMA10 past the knee.
-        ext = r.get("ext_ema10")
-        if ext is None:
-            return 0.0
-        return min(cfg["ext_cap"], max(0.0, (ext - cfg["ext_knee"]) * cfg["ext_slope"]))
-
-    def volatility_penalty(r):
-        vol = r.get("volatility_d")
-        if vol is None:
-            return 0.0
-        return min(cfg["vol_cap"], max(0.0, (vol - cfg["vol_knee"]) * cfg["vol_slope"]))
-
-    cci_pts = cci_factor if cci_factor is not None else 50.0  # compulsory CCI input
-
+    perf_vals = [perf(r) for r in filtered]
     for r in filtered:
-        factors = {
-            "rs": (r["rs_rating"] or 50.0),
-            "mom1m": _percentile_rank(mom1m_vals, r["chg_1m"]),
-            "high": _percentile_rank(high_vals, r["pct_from_52w_high"]),
-            "vol": _percentile_rank(vol_vals, r["volume_ratio"]),
-            "above20": 100 if r["above_20d"] else 0,
-            "above50": 100 if r["above_50d"] else 0,
-            "above200": 100 if r.get("above_200d") else 0,
-            "breakout": breakout_points(r),
-            "cci": cci_pts,
-        }
-        score = sum(W[k] * factors[k] for k in W)
-        score -= extension_penalty(r) + volatility_penalty(r)
-        r["score"] = round(min(100.0, max(0.0, score)), 2)
-        # contributing factors for the strategy-specific composite display
-        r["composite_factors"] = {k: round(factors[k], 1) for k in factors}
+        r["score"] = round(_percentile_rank(perf_vals, perf(r)), 2)
+        r["composite_factors"] = {"rs": round(r["score"], 1)}
 
     filtered.sort(key=lambda r: (-r["score"], r.get("ticker") or r.get("stock_ticker") or ""))
     n = len(filtered)
@@ -2958,7 +2920,7 @@ def watchlist_entries(conn):
                         3M 42.5%; EMA proximity = closeness to the nearest of
                         the 10/20/50 EMA), every input min-max normalized
                         across the watchlist.
-      breakout_score  — the existing Qullamaggie setup composite (score_and_rank).
+      breakout_score  — the within-universe Relative Strength rank (score_and_rank).
       ep_score        — the EP blend (chg/volume/ADR/tightness), computed for
                         every watchlisted stock regardless of EP thresholds.
 

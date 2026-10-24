@@ -13,7 +13,7 @@ Final Score = 50% Performance + 50% CCI
 - **Performance (50%)**: 15% 1-week + 50% 1-month + 35% 3-month performance, min-max **normalized to 0–100** across sectors before combining.
 - **CCI (50%)**: the CCI(34) rating of the sector's proxy ETF (`SECTOR_ETF_MAP`, e.g. Energy Minerals → XLE), mapped to 0–100 (Bearish 0 / Neutral 50 / Bullish-Caution 75 / Bullish 100); sectors without an ETF CCI fall back to the market-wide CCI factor.
 
-Stock ranking is unchanged: the shared composite factor framework (RS, momentum, proximity to highs, volume, trend alignment, breakout proximity) with **CCI as a compulsory input** (10% weight) in the stock composite (`STRATEGY_DEFS` / `score_and_rank` in `backend/engine.py`).
+Stock ranking uses a true Relative Strength score (`score_and_rank` in `backend/engine.py`): only stocks passing the eligibility filters are considered, and each accepted stock's score is its percentile rank (0–100) of a performance composite (15% 1W + 50% 1M + 35% 3M returns) within that eligible pool. Higher score = stronger relative price performance; lists are ordered strongest-first.
 
 ## ETF Hub: multi-factor leadership & opportunity ranking
 
