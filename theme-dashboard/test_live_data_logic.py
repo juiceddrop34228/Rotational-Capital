@@ -188,6 +188,62 @@ def test_market_scan_filter_accounting():
     print("OK ->", stats)
 
 
+def test_sector_rotation_scores():
+    import engine
+
+    neutral = engine.sector_rotation_scores([{"sector_id": 1}])[1]
+    assert neutral["score"] == 50.0
+    assert neutral["state"] == "neutral" and neutral["rank_label"] == "Neutral"
+    weighted = sum(neutral["components"][key] * weight
+                   for key, weight in engine.SECTOR_SCORE_WEIGHTS.items())
+    assert round(weighted, 1) == neutral["score"]
+
+    base = {
+        "breadth_20": 50, "breadth_50": 50, "breadth_200": 50,
+        "breadth_pct": 50, "new_highs_pct": 0, "new_lows_pct": 0,
+        "advances": 5, "declines": 5, "ema10_above_20": 1,
+        "above_50ema": 1, "top5_persistence": 50, "rank_now": 2,
+        "extension": 2, "atr_pct": 1, "volatility": 1,
+        "drawdown": -2, "distance_high": -2, "beta": 1,
+    }
+    leader = dict(base, sector_id=1, perf_1d=2, perf_1w=6, perf_1m=12,
+                  perf_3m=25, score_chg_5d=2, rank_chg_5d=1, rs_vs_spy=8,
+                  avg_rs=90, rs_chg_5d=1, rs_slope=0.5, breadth_20=85,
+                  breadth_50=80, breadth_200=75, breadth_pct=80,
+                  new_highs_pct=20, advances=9, declines=1,
+                  top5_persistence=100, rank_now=1)
+    emerging = dict(base, sector_id=2, perf_1d=1, perf_1w=3, perf_1m=6,
+                    perf_3m=10, score_chg_5d=8, rank_chg_5d=4, rs_vs_spy=0,
+                    avg_rs=55, rs_chg_5d=4, rs_slope=0.2, breadth_20=65,
+                    breadth_50=60, breadth_200=55, breadth_pct=60,
+                    new_highs_pct=8, advances=7, declines=3,
+                    top5_persistence=20, rank_now=2)
+    weak = dict(base, sector_id=3, perf_1d=-2, perf_1w=-5, perf_1m=-10,
+                perf_3m=-20, score_chg_5d=-8, rank_chg_5d=-4, rs_vs_spy=-8,
+                avg_rs=20, rs_chg_5d=-4, rs_slope=-0.5, breadth_20=20,
+                breadth_50=25, breadth_200=30, breadth_pct=25,
+                new_lows_pct=20, advances=1, declines=9, ema10_above_20=0,
+                above_50ema=0, top5_persistence=0, rank_now=3)
+    rows = [leader, emerging, weak]
+    scored = engine.sector_rotation_scores(rows)
+    assert scored[1]["score"] > scored[2]["score"] > scored[3]["score"]
+    assert scored[1]["state"] == "leader"
+    assert scored[2]["state"] == "emerging"
+    assert scored[3]["state"] == "lagging"
+    assert all(0 <= result["score"] <= 100 for result in scored.values())
+
+    extended = engine.sector_rotation_scores([dict(leader, extension=18), emerging, weak])
+    assert extended[1]["score"] < scored[1]["score"]
+    assert extended[1]["state"] == "leader"
+
+    normal_beta = engine.sector_rotation_scores([leader, weak])[1]
+    high_beta = engine.sector_rotation_scores([dict(leader, beta=2.5), weak])[1]
+    assert high_beta["score"] == normal_beta["score"]
+    weak_high_beta = engine.sector_rotation_scores([leader, dict(weak, beta=2.5)])[3]
+    assert weak_high_beta["components"]["risk"] < scored[3]["components"]["risk"]
+    print("OK ->", {sid: (r["score"], r["rank_label"]) for sid, r in scored.items()})
+
+
 if __name__ == "__main__":
     test_tv_row_to_metrics()
     test_tv_row_no_price()
@@ -197,4 +253,5 @@ if __name__ == "__main__":
     test_cci_rating()
     test_cap_weighted_average()
     test_market_scan_filter_accounting()
+    test_sector_rotation_scores()
     print("\nAll offline logic tests passed.")

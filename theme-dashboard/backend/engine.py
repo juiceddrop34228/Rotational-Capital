@@ -2051,6 +2051,174 @@ def classify_sector_state_strategy(score, breadth, avg_rs, prev_score=None,
 
 
 # ---------------------------------------------------------------------------
+# Multi-factor sector rotation score
+# ---------------------------------------------------------------------------
+SECTOR_SCORE_WEIGHTS = {
+    "momentum": 0.30,
+    "relative_strength": 0.25,
+    "breadth": 0.20,
+    "trend": 0.15,
+    "risk": 0.10,
+}
+
+
+def _sector_clamp(value):
+    return min(100.0, max(0.0, value))
+
+
+def _sector_percentiles(stats_list, key):
+    values = [s.get(key) for s in stats_list if s.get(key) is not None]
+    out = {}
+    for s in stats_list:
+        value = s.get(key)
+        if value is None or not values:
+            out[s["sector_id"]] = 50.0
+            continue
+        below = sum(x < value for x in values)
+        equal = sum(x == value for x in values)
+        out[s["sector_id"]] = (50.0 if len(values) == 1 else
+                               (below + (equal - 1) / 2) / (len(values) - 1) * 100)
+    return out
+
+
+def _weighted_parts(parts):
+    return sum(value * weight for value, weight in parts)
+
+
+def sector_rotation_scores(stats_list):
+    """Score sectors from a neutral 50 using the five rotation components.
+
+    Relative inputs are percentile-ranked across the sector universe. Missing
+    inputs stay neutral rather than being treated as zero. The returned state
+    remains lowercase for the existing API; rank_label is the display label.
+    """
+    if not stats_list:
+        return {}
+
+    percentile_keys = (
+        "perf_1d", "perf_1w", "perf_1m", "perf_3m", "score_chg_5d",
+        "rank_chg_5d", "rs_vs_spy", "avg_rs", "rs_chg_5d", "rs_slope",
+    )
+    pct = {key: _sector_percentiles(stats_list, key) for key in percentile_keys}
+    universe_size = len(stats_list)
+    out = {}
+
+    for s in stats_list:
+        sid = s["sector_id"]
+        momentum = _weighted_parts((
+            (pct["perf_1d"][sid], 0.10),
+            (pct["perf_1w"][sid], 0.20),
+            (pct["perf_1m"][sid], 0.25),
+            (pct["perf_3m"][sid], 0.15),
+            (pct["score_chg_5d"][sid], 0.15),
+            (pct["rank_chg_5d"][sid], 0.15),
+        ))
+        rs_percent = pct["rs_vs_spy"][sid]
+        relative_strength = _weighted_parts((
+            (pct["rs_vs_spy"][sid], 0.25),
+            (pct["avg_rs"][sid], 0.20),
+            (pct["rs_chg_5d"][sid], 0.20),
+            (rs_percent, 0.15),
+            (pct["rs_slope"][sid], 0.20),
+        ))
+
+        b20 = s.get("breadth_20") if s.get("breadth_20") is not None else 50.0
+        b50 = s.get("breadth_50") if s.get("breadth_50") is not None else 50.0
+        b200 = s.get("breadth_200") if s.get("breadth_200") is not None else 50.0
+        breadth_pct = s.get("breadth_pct")
+        if breadth_pct is None:
+            breadth_pct = (b20 + b50 + b200) / 3
+        high_low = _sector_clamp(50 + 2 * (
+            (s.get("new_highs_pct") or 0) - (s.get("new_lows_pct") or 0)))
+        advances = s.get("advances")
+        declines = s.get("declines")
+        advance_decline = (
+            advances / (advances + declines) * 100
+            if advances is not None and declines is not None and advances + declines > 0
+            else 50.0
+        )
+        breadth = _weighted_parts((
+            (_sector_clamp(b20), 0.15),
+            (_sector_clamp(b50), 0.15),
+            (_sector_clamp(b200), 0.15),
+            (_sector_clamp(breadth_pct), 0.20),
+            (high_low, 0.20),
+            (advance_decline, 0.15),
+        ))
+
+        ema_aligned = s.get("ema10_above_20")
+        above_50 = s.get("above_50ema")
+        trend_state = (50.0 if ema_aligned is None and above_50 is None else
+                       25 + 35 * bool(ema_aligned) + 40 * bool(above_50))
+        rank_now = s.get("rank_now")
+        rank_position = (
+            (universe_size - rank_now) / (universe_size - 1) * 100
+            if rank_now is not None and universe_size > 1 else 50.0
+        )
+        persistence = s.get("top5_persistence")
+        trend = _weighted_parts((
+            (trend_state, 0.40),
+            (_sector_clamp(rank_position), 0.30),
+            (_sector_clamp(persistence if persistence is not None else 50.0), 0.30),
+        ))
+
+        extension = s.get("extension")
+        atr_pct = s.get("atr_pct")
+        volatility = s.get("volatility")
+        drawdown = s.get("drawdown")
+        distance_high = s.get("distance_high")
+        extension_score = (50.0 if extension is None else
+                           100 - _sector_clamp((max(0.0, extension) - 3) / 12 * 100))
+        atr_score = (50.0 if atr_pct is None else
+                     100 - _sector_clamp((atr_pct - 1) / 4 * 100))
+        volatility_score = (50.0 if volatility is None else
+                            100 - _sector_clamp((volatility - 1) / 4 * 100))
+        drawdown_score = (50.0 if drawdown is None else
+                          100 - _sector_clamp((abs(drawdown) - 5) / 25 * 100))
+        distance_score = (50.0 if distance_high is None else
+                          100 - _sector_clamp((abs(distance_high) - 5) / 25 * 100))
+        risk = _weighted_parts((
+            (extension_score, 0.30),
+            (atr_score, 0.15),
+            (volatility_score, 0.15),
+            (drawdown_score, 0.25),
+            (distance_score, 0.15),
+        ))
+        beta = s.get("beta")
+        if beta is not None and beta > 1.5 and not (relative_strength >= 55 and breadth >= 55):
+            risk = _sector_clamp(risk - min(20.0, (beta - 1.5) * 20))
+
+        components = {
+            "momentum": momentum,
+            "relative_strength": relative_strength,
+            "breadth": breadth,
+            "trend": trend,
+            "risk": risk,
+        }
+        score = round(_sector_clamp(sum(
+            components[key] * weight for key, weight in SECTOR_SCORE_WEIGHTS.items())), 1)
+        score_change = s.get("score_chg_5d") or 0.0
+        rs_change = s.get("rs_chg_5d") or 0.0
+        if score >= 65 and relative_strength >= 55 and breadth >= 50 and trend >= 70:
+            state = "leader"
+        elif score < 40 or (score < 50 and relative_strength < 40 and breadth < 45):
+            state = "lagging"
+        elif score >= 50 and momentum >= 55 and (score_change > 0 or rs_change > 0):
+            state = "emerging"
+        elif score < 60 and momentum < 50 and (score_change < 0 or rs_change < 0):
+            state = "fading"
+        else:
+            state = "neutral"
+        out[sid] = {
+            "score": score,
+            "state": state,
+            "rank_label": state.capitalize(),
+            "components": {key: round(value, 1) for key, value in components.items()},
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
 # EP (Episodic Pivot) scanner + Watchlist ranking
 # ---------------------------------------------------------------------------
 

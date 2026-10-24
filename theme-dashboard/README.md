@@ -2,16 +2,22 @@
 
 A dark-themed, full-fledged sector rotation analysis dashboard for swing traders. It ranks sectors by leadership, emerging momentum, fading strength, and lagging weakness using live market data from free sources.
 
-## CCI-based sector ranking, one strategy engine
+## Multi-factor sector ranking
 
-The app runs a single strategy engine — **Qullamaggie** — inside one shell; the **Markets layer is universal**. The **sector score is completely CCI-based**:
+The app runs a single strategy engine — **Qullamaggie** — inside one shell; the **Markets layer is universal**. Sector scores start at neutral 50 and combine five 0–100 components:
 
 ```
-Final Score = 50% Performance + 50% CCI
+Final Score = 30% Momentum + 25% Relative Strength + 20% Breadth
+            + 15% Trend Quality & Persistence + 10% Risk & Extension
 ```
 
-- **Performance (50%)**: 15% 1-week + 50% 1-month + 35% 3-month performance, min-max **normalized to 0–100** across sectors before combining.
-- **CCI (50%)**: the CCI(34) rating of the sector's proxy ETF (`SECTOR_ETF_MAP`, e.g. Energy Minerals → XLE), mapped to 0–100 (Bearish 0 / Neutral 50 / Bullish-Caution 75 / Bullish 100); sectors without an ETF CCI fall back to the market-wide CCI factor.
+- **Momentum**: 1D/1W/1M/3M returns plus five-snapshot score and rank changes.
+- **Relative strength**: performance versus SPY, average RS, RS change, RS percentile, and RS slope.
+- **Breadth**: stocks above their 20/50/200-day EMAs, overall breadth, new highs versus lows, and advances versus declines.
+- **Trend quality and persistence**: EMA state, rank across the 10-snapshot heatmap, and time spent in the top five.
+- **Risk and extension**: ATR, volatility, beta, drawdown, distance from high, and extension. High beta is not penalized automatically when relative strength and breadth are strong.
+
+Relative inputs use cross-sector percentiles, missing inputs remain neutral, and final scores are clamped to 0–100. Labels are Leader, Emerging, Neutral, Fading, or Lagging; sustained leadership is distinguished from improving sectors with room to run.
 
 Stock ranking uses a true Relative Strength score (`score_and_rank` in `backend/engine.py`): only stocks passing the eligibility filters are considered, and each accepted stock's score is its percentile rank (0–100) of a performance composite (15% 1W + 50% 1M + 35% 3M returns) within that eligible pool. Higher score = stronger relative price performance; lists are ordered strongest-first.
 

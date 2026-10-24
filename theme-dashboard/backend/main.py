@@ -240,56 +240,173 @@ def _group_rank(scored, ticker_key="ticker"):
 
 
 def _strategy_context(conn, strategy):
-    """Compute per-strategy sector scores + states for the latest snapshot.
-
-    Returns {"strategy", "label", "cci_factor", "scores": {sid: score},
-    "states": {sid: state}, "base": {sid: pre-CCI strategy score}}."""
+    """Build the multi-factor sector model consistently across all snapshots."""
     strategy = _norm_strategy(strategy)
     cci = engine.cci_market_factor(conn)
-    # Sector CCI: CCI(34) of each sector's proxy ETF (SECTOR_ETF_MAP) — the
-    # compulsory CCI input for the strategy sector scores; sectors without an
-    # ETF CCI value fall back to the market-wide factor.
     cci_by_sector = engine.sector_cci_factors(conn)
-    stats = []
-    prev_scores = {}
-    rows = conn.execute(
-        "SELECT id AS sector_id FROM sector ORDER BY id"
+    sector_ids = [r[0] for r in conn.execute("SELECT id FROM sector ORDER BY id")]
+    histories = {
+        sid: [dict(r) for r in conn.execute(
+            "SELECT * FROM sector_snapshot WHERE sector_id=? ORDER BY dt ASC", (sid,))]
+        for sid in sector_ids
+    }
+    dates = sorted({r["dt"] for hist in histories.values() for r in hist})
+    by_date = {
+        dt: [r for hist in histories.values() for r in hist if r["dt"] == dt]
+        for dt in dates
+    }
+
+    current = {}
+    stock_rows = conn.execute(
+        f"SELECT * FROM stock WHERE sector_id IS NOT NULL AND {STOCK_FILTER_SQL}",
+        STOCK_FILTER_PARAMS,
     ).fetchall()
-    for r in rows:
-        sid = r["sector_id"]
-        hist = conn.execute(
-            "SELECT * FROM sector_snapshot WHERE sector_id=? ORDER BY dt ASC", (sid,)
-        ).fetchall()
-        if not hist:
+    grouped = {}
+    for row in stock_rows:
+        grouped.setdefault(row["sector_id"], []).append(dict(row))
+    for sid, rows in grouped.items():
+        if not rows:
             continue
-        snap = hist[-1]
-        stats.append({
-            "sector_id": sid,
-            "perf_1w": snap["chg_1w"], "perf_1m": snap["chg_1m"],
-            "perf_3m": snap["chg_3m"], "perf_6m": snap["chg_6m"],
-            "breadth": snap["breadth_pct_above_50ma"],
-            "rs_vs_spy": snap["rs_vs_spy_1m"],
-            "pct_new_highs": snap["pct_new_highs"],
-            "avg_vol_ratio": snap["avg_volume_ratio"],
-            "concentration": snap["concentration_index"],
-            "etf_pct_from_52w_high": snap["etf_pct_from_52w_high"],
-            "ema10_above_20": snap["ema10_above_20"],
-            "above_50ema": snap["above_50ema"],
-            "avg_rs": snap["avg_rs_rating"],
-        })
-        if len(hist) >= 6:
-            prev_scores[sid] = (snap["score"] or 0) - (hist[-6]["score"] or 0)
-    scores = engine.strategy_sector_scores(stats, strategy, cci, cci_by_sector)
-    # pre-CCI component for the composite-factor display: the normalized
-    # performance score (15% 1W / 50% 1M / 35% 3M, min-max normalized 0-100)
-    base = engine.sector_performance_scores(stats)
-    states = {}
-    for st in stats:
-        sid = st["sector_id"]
-        vel = prev_scores.get(sid, 0)
-        states[sid] = engine.classify_sector_state_strategy(
-            scores.get(sid, 0), st["breadth"], st["avg_rs"],
-            scores.get(sid, 0) - vel, strategy)
+
+        def avg(key):
+            vals = [r.get(key) for r in rows if r.get(key) is not None]
+            return sum(vals) / len(vals) if vals else None
+
+        atr_values = [
+            (r["atr"] / r["price"] * 100 if r.get("atr") is not None else r.get("adr_pct"))
+            for r in rows if r.get("price") and
+            (r.get("atr") is not None or r.get("adr_pct") is not None)
+        ]
+        current[sid] = {
+            "breadth_20": sum(bool(r.get("above_20d")) for r in rows) / len(rows) * 100,
+            "breadth_50": sum(bool(r.get("above_50d")) for r in rows) / len(rows) * 100,
+            "breadth_200": sum(bool(r.get("above_200d")) for r in rows) / len(rows) * 100,
+            "new_highs_pct": sum((r.get("pct_from_52w_high") or -100) >= -3 for r in rows) / len(rows) * 100,
+            "new_lows_pct": sum((r.get("pct_from_52w_low") or 100) <= 3 for r in rows) / len(rows) * 100,
+            "advances": sum((r.get("chg_1d") or 0) > 0 for r in rows),
+            "declines": sum((r.get("chg_1d") or 0) < 0 for r in rows),
+            "atr_pct": sum(atr_values) / len(atr_values) if atr_values else None,
+            "volatility": avg("volatility_d"),
+            "extension": avg("ext_ema10"),
+        }
+
+    market_returns = []
+    if dates:
+        normalized = []
+        for hist in histories.values():
+            prices = {r["dt"]: r["price"] for r in hist if r.get("price")}
+            common = [dt for dt in dates if dt in prices]
+            if common:
+                base = prices[common[0]]
+                normalized.append([prices[dt] / base * 100 for dt in common])
+        if normalized and all(len(series) == len(normalized[0]) for series in normalized):
+            market = [sum(series[i] for series in normalized) / len(normalized)
+                      for i in range(len(normalized[0]))]
+            market_returns = _daily_returns(market)
+
+    score_by_date = {}
+    rank_by_date = {}
+    state_by_date = {}
+    detail_by_date = {}
+    latest_stats = []
+    history_positions = {
+        sid: {snap["dt"]: i for i, snap in enumerate(hist)}
+        for sid, hist in histories.items()
+    }
+    for i, dt in enumerate(dates):
+        stats = []
+        for snap in by_date[dt]:
+            sid = snap["sector_id"]
+            pos = history_positions[sid][dt]
+            hist_upto = histories[sid][:pos + 1]
+            old_snap = histories[sid][pos - 5] if pos >= 5 else None
+            previous_ranks = [rank_by_date[d].get(sid) for d in dates[max(0, i - 9):i]]
+            rs_series = [r["avg_rs_rating"] for r in hist_upto[-10:]
+                         if r.get("avg_rs_rating") is not None]
+            old_rs = old_snap.get("avg_rs_rating") if old_snap else None
+            st = {
+                "sector_id": sid,
+                "perf_1d": snap.get("chg_1d"),
+                "perf_1w": snap.get("chg_1w"),
+                "perf_1m": snap.get("chg_1m"),
+                "perf_3m": snap.get("chg_3m"),
+                "perf_6m": snap.get("chg_6m"),
+                "score_chg_5d": None,
+                "rank_chg_5d": None,
+                "rs_vs_spy": snap.get("rs_vs_spy_1m"),
+                "avg_rs": snap.get("avg_rs_rating"),
+                "rs_chg_5d": (snap.get("avg_rs_rating") - old_rs)
+                             if snap.get("avg_rs_rating") is not None and old_rs is not None else None,
+                "rs_slope": _lin_slope(rs_series) if len(rs_series) >= 2 else None,
+                "breadth_50": snap.get("breadth_pct_above_50ma"),
+                "breadth_pct": snap.get("breadth_pct_above_50ma"),
+                "new_highs_pct": snap.get("pct_new_highs"),
+                "new_lows_pct": 0.0,
+                "ema10_above_20": snap.get("ema10_above_20"),
+                "above_50ema": snap.get("above_50ema"),
+                "rank_now": previous_ranks[-1] if previous_ranks else None,
+                "top5_persistence": None,
+                "distance_high": snap.get("etf_pct_from_52w_high"),
+                "drawdown": min((r["etf_pct_from_52w_high"] for r in hist_upto[-20:]
+                                 if r.get("etf_pct_from_52w_high") is not None), default=None),
+            }
+            if dt == dates[-1]:
+                st.update(current.get(sid, {}))
+                prices = [r["price"] for r in histories[sid] if r.get("price")]
+                sector_returns = _daily_returns(prices)
+                k = min(len(sector_returns), len(market_returns))
+                if k >= 5:
+                    sr, mr = sector_returns[-k:], market_returns[-k:]
+                    sm, mm = sum(sr) / k, sum(mr) / k
+                    variance = sum((x - mm) ** 2 for x in mr) / k
+                    if variance:
+                        covariance = sum((a - sm) * (b - mm) for a, b in zip(sr, mr)) / k
+                        st["beta"] = covariance / variance
+            stats.append(st)
+
+        details = {}
+        for _ in range(3):
+            details = engine.sector_rotation_scores(stats)
+            ordered = sorted(stats, key=lambda s: (-details[s["sector_id"]]["score"], s["sector_id"]))
+            ranks = {s["sector_id"]: rank for rank, s in enumerate(ordered, 1)}
+            for st in stats:
+                sid = st["sector_id"]
+                st["rank_now"] = ranks[sid]
+                st["score_chg_5d"] = (details[sid]["score"] - score_by_date[dates[i - 5]][sid]
+                                      if i >= 5 and sid in score_by_date[dates[i - 5]] else None)
+                old_rank = rank_by_date[dates[i - 5]].get(sid) if i >= 5 else None
+                st["rank_chg_5d"] = old_rank - ranks[sid] if old_rank is not None else None
+                recent = [rank_by_date[d].get(sid) for d in dates[max(0, i - 9):i]] + [ranks[sid]]
+                known = [rank for rank in recent if rank is not None]
+                st["top5_persistence"] = sum(rank <= 5 for rank in known) / len(known) * 100 if known else None
+        details = engine.sector_rotation_scores(stats)
+        score_by_date[dt] = {sid: result["score"] for sid, result in details.items()}
+        rank_by_date[dt] = ranks
+        state_by_date[dt] = {sid: result["state"] for sid, result in details.items()}
+        detail_by_date[dt] = details
+        if dt == dates[-1]:
+            latest_stats = stats
+
+    scores = score_by_date.get(dates[-1], {}) if dates else {}
+    states = state_by_date.get(dates[-1], {}) if dates else {}
+    details = detail_by_date.get(dates[-1], {}) if dates else {}
+    model_histories = {}
+    for sid, hist in histories.items():
+        model_histories[sid] = [
+            {**snap,
+             "score": score_by_date.get(snap["dt"], {}).get(sid, snap.get("score")),
+             "state": state_by_date.get(snap["dt"], {}).get(sid, snap.get("state"))}
+            for snap in hist
+        ]
+    score_deltas = {}
+    rank_deltas = {}
+    for sid in scores:
+        hist = model_histories.get(sid, [])
+        score_deltas[sid] = (round(hist[-1]["score"] - hist[-6]["score"], 1)
+                             if len(hist) >= 6 else 0.0)
+        rank_deltas[sid] = (rank_by_date[hist[-6]["dt"]][sid] - rank_by_date[hist[-1]["dt"]][sid]
+                            if len(hist) >= 6 and sid in rank_by_date.get(hist[-6]["dt"], {}) else 0)
+    base = engine.sector_performance_scores(latest_stats)
     return {
         "strategy": strategy,
         "label": engine.STRATEGY_DEFS[strategy]["label"],
@@ -297,6 +414,10 @@ def _strategy_context(conn, strategy):
         "cci_by_sector": cci_by_sector,
         "scores": scores,
         "states": states,
+        "details": details,
+        "histories": model_histories,
+        "score_deltas": score_deltas,
+        "rank_deltas": rank_deltas,
         "base": base,
     }
 
@@ -463,24 +584,24 @@ def _sector_summary(sector_id, conn, strategy=None, sctx=None):
         if sctx is None:
             sctx = _strategy_context(conn, strategy)
         sid = s["id"]
-        # The CCI input shown for a sector is that sector's ETF CCI (sector
-        # CCI), falling back to the market-wide factor when unavailable.
         sector_cci = (sctx.get("cci_by_sector") or {}).get(sid, sctx["cci_factor"])
-        # Preserve the canonical (strategy-agnostic) values so the universal
-        # Markets layer can keep showing them on every dashboard.
-        snap_dict["canonical_score"] = snap_dict.get("score")
-        snap_dict["canonical_state"] = snap_dict.get("state")
-        snap_dict["score"] = sctx["scores"].get(sid, snap_dict.get("score"))
-        snap_dict["state"] = sctx["states"].get(sid, snap_dict.get("state"))
+        model_score = sctx["scores"].get(sid, snap_dict.get("score"))
+        model_state = sctx["states"].get(sid, snap_dict.get("state"))
+        snap_dict["canonical_score"] = model_score
+        snap_dict["canonical_state"] = model_state
+        snap_dict["score"] = model_score
+        snap_dict["state"] = model_state
+        history = sctx.get("histories", {}).get(sid, history)
         strategy_info = {
             "strategy": sctx["strategy"],
             "label": sctx["label"],
-            "composite_score": sctx["scores"].get(sid),
+            "composite_score": model_score,
             "composite_base": (sctx["base"] or {}).get(sid),
             "cci_factor": sector_cci,
             "factors": {
                 "performance": round((sctx["base"] or {}).get(sid, 0), 1),
                 "cci": sector_cci,
+                **(sctx.get("details", {}).get(sid, {}).get("components") or {}),
             },
         }
     return {
@@ -500,9 +621,11 @@ def _sector_summary(sector_id, conn, strategy=None, sctx=None):
         "concentration_index": conc,
         "rotation_health_score": rotation_score,
         "style": _style_for(s["sub"]),
-        "score_delta_5d": _score_delta_5d(history),
+        "score_delta_5d": ((sctx or {}).get("score_deltas", {}).get(s["id"])
+                           if sctx is not None else _score_delta_5d(history)),
         "rs_trend": _rs_trend_5d(history),
-        "rank_delta": _rank_delta(s["id"], conn),
+        "rank_delta": ((sctx or {}).get("rank_deltas", {}).get(s["id"])
+                       if sctx is not None else _rank_delta(s["id"], conn)),
         "command": _command_metrics(history, primary_holdings),
         "excluded_summary": {
             k: {"excluded": v["excluded_count"], "total": v["total_holdings"]}
@@ -1000,7 +1123,8 @@ def sector_rrg():
 @app.get("/api/sectors")
 def list_sectors(strategy: str = None):
     conn = _mk_conn()
-    sctx = _strategy_context(conn, strategy) if strategy is not None else None
+    strategy = _norm_strategy(strategy)
+    sctx = _strategy_context(conn, strategy)
     sectors = conn.execute("SELECT * FROM sector ORDER BY id").fetchall()
     out = []
     for s in sectors:
@@ -1208,18 +1332,16 @@ def dashboard(strategy: str = None):
         for s in summaries if s["latest_snapshot"]
     ]
     mkt_rets = _daily_returns(market_history)
-    conn = _mk_conn()
-    dts = [r[0] for r in conn.execute(
-        "SELECT DISTINCT dt FROM sector_snapshot ORDER BY dt DESC LIMIT 10"
-    ).fetchall()]
+    dts = sorted({snap["dt"] for hist in sctx["histories"].values() for snap in hist},
+                 reverse=True)[:10]
     rank_by_dt = {}
     for dt in dts:
-        rows = conn.execute(
-            "SELECT sector_id, score FROM sector_snapshot WHERE dt=?", (dt,)
-        ).fetchall()
+        rows = [{"sector_id": sid, "score": next(
+            snap["score"] for snap in hist if snap["dt"] == dt)}
+            for sid, hist in sctx["histories"].items()
+            if any(snap["dt"] == dt for snap in hist)]
         ordered = sorted(rows, key=lambda r: (r["score"] or 0), reverse=True)
         rank_by_dt[dt] = {r["sector_id"]: i + 1 for i, r in enumerate(ordered)}
-    conn.close()
 
     for s in summaries:
         cmd = s.get("command") or {}
