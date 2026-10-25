@@ -255,8 +255,8 @@ function ScoreBar({value}) {
   if(value>=50) color = "var(--amber)";
   if(value>=70) color = "var(--green)";
   return (
-    <div className="bar-bg" style={{height:6, borderRadius:3}}>
-      <div className={"bar-fill "+(value>=70?"leader":"")} style={{width:pct+"%", background:color, borderRadius:3}}></div>
+    <div className="bar-bg" style={{height:6, borderRadius:1}}>
+      <div className={"bar-fill "+(value>=70?"leader":"")} style={{width:pct+"%", background:color, borderRadius:1}}></div>
     </div>
   );
 }
@@ -399,7 +399,7 @@ const RRG_DOT_CSS = `
 .rrg-dots{position:relative;}
 .rrg-dots circle.dot{cursor:pointer;}
 .rrg-dot-tip{position:absolute;pointer-events:none;transform:translate(-50%,-130%);
-  background:#161b22;border:1px solid var(--border);border-radius:6px;
+  background:#161b22;border:1px solid var(--border);border-radius:var(--radius-surface);
   padding:6px 10px;font-size:12px;font-weight:700;white-space:nowrap;z-index:5;}
 .rrg-dot-tip .tip-sector{font-size:10.5px;font-weight:600;opacity:.85;}
 .rrg-dot-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:8px;font-size:10.5px;color:var(--text-dim);}
