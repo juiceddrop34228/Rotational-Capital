@@ -12238,7 +12238,6 @@ function IndustryLeaderboards({
   }, "Loading leaderboards…"));
   const rows = data.rows || [];
   const lists = data.lists || {};
-  const pullback = data.pullback || [];
   const profiles = data.profiles || [];
 
   // RRG-style scatter: x = recent momentum component, y = sustained RS
@@ -12506,44 +12505,7 @@ function IndustryLeaderboards({
       fontSize: 11,
       padding: "6px 12px"
     }
-  }, breakdownText(r))))))))), /*#__PURE__*/React.createElement("div", {
-    className: "panel lb-full"
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "panel-title"
-  }, /*#__PURE__*/React.createElement("span", null, "MA-Pullback Leaders"), /*#__PURE__*/React.createElement("span", {
-    className: "hint"
-  }, "green-candle pullback into the EMA10–EMA20 zone within the last 5 sessions · body > 1.6× avg · close in top 25% of range · vol > 1.2×")), /*#__PURE__*/React.createElement("div", {
-    className: "table-scroll"
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "#"), /*#__PURE__*/React.createElement("th", null, "Industry"), /*#__PURE__*/React.createElement("th", null, "Sector"), /*#__PURE__*/React.createElement("th", null, "Signal Date"), /*#__PURE__*/React.createElement("th", {
-    title: "Candle body / 20-day average body"
-  }, "Body ×"), /*#__PURE__*/React.createElement("th", {
-    title: "Close position within the candle range (1 = at the high)"
-  }, "Close Pos"), /*#__PURE__*/React.createElement("th", {
-    title: "Volume / 20-day average volume"
-  }, "Vol ×"), /*#__PURE__*/React.createElement("th", null, "Score"))), /*#__PURE__*/React.createElement("tbody", null, pullback.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "8",
-    className: "text-faint"
-  }, "No MA-pullback signals detected in the last 5 sessions.")), pullback.map((r, i) => /*#__PURE__*/React.createElement("tr", {
-    key: r.industry,
-    onClick: onSelectIndustry ? () => onSelectIndustry(r.industry, null) : undefined,
-    className: onSelectIndustry ? "hover-row" : ""
-  }, /*#__PURE__*/React.createElement("td", {
-    className: "mono text-faint"
-  }, i + 1), /*#__PURE__*/React.createElement("td", {
-    className: "fw-700"
-  }, r.industry), /*#__PURE__*/React.createElement("td", {
-    className: "text-dim"
-  }, r.sector || "—"), /*#__PURE__*/React.createElement("td", {
-    className: "mono"
-  }, r.pattern.date || "—"), /*#__PURE__*/React.createElement("td", {
-    className: "mono"
-  }, r.pattern.body_ratio == null ? "—" : r.pattern.body_ratio.toFixed(2) + "x"), /*#__PURE__*/React.createElement("td", {
-    className: "mono"
-  }, r.pattern.close_pos == null ? "—" : r.pattern.close_pos.toFixed(2)), /*#__PURE__*/React.createElement("td", {
-    className: "mono"
-  }, r.pattern.vol_ratio == null ? "—" : r.pattern.vol_ratio.toFixed(2) + "x"), /*#__PURE__*/React.createElement("td", {
-    className: "mono fw-700"
-  }, r.leadership_score.toFixed(0))))))))));
+  }, breakdownText(r)))))))))));
 }
 
 // ---------------------------------------------------------------------------

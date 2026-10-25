@@ -6077,7 +6077,6 @@ function IndustryLeaderboards({onSelectIndustry}){
 
   const rows = data.rows || [];
   const lists = data.lists || {};
-  const pullback = data.pullback || [];
   const profiles = data.profiles || [];
 
   // RRG-style scatter: x = recent momentum component, y = sustained RS
@@ -6246,44 +6245,6 @@ function IndustryLeaderboards({onSelectIndustry}){
                       </td></tr>
                     )}
                   </React.Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <div className="panel lb-full">
-          <div className="panel-title">
-            <span>MA-Pullback Leaders</span>
-            <span className="hint">green-candle pullback into the EMA10–EMA20 zone within the last 5 sessions · body &gt; 1.6× avg · close in top 25% of range · vol &gt; 1.2×</span>
-          </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th><th>Industry</th><th>Sector</th><th>Signal Date</th>
-                  <th title="Candle body / 20-day average body">Body ×</th>
-                  <th title="Close position within the candle range (1 = at the high)">Close Pos</th>
-                  <th title="Volume / 20-day average volume">Vol ×</th>
-                  <th>Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pullback.length===0 && (
-                  <tr><td colSpan="8" className="text-faint">No MA-pullback signals detected in the last 5 sessions.</td></tr>
-                )}
-                {pullback.map((r,i)=>(
-                  <tr key={r.industry}
-                      onClick={onSelectIndustry? ()=>onSelectIndustry(r.industry, null) : undefined}
-                      className={onSelectIndustry?"hover-row":""}>
-                    <td className="mono text-faint">{i+1}</td>
-                    <td className="fw-700">{r.industry}</td>
-                    <td className="text-dim">{r.sector || "—"}</td>
-                    <td className="mono">{r.pattern.date || "—"}</td>
-                    <td className="mono">{r.pattern.body_ratio==null?"—":r.pattern.body_ratio.toFixed(2)+"x"}</td>
-                    <td className="mono">{r.pattern.close_pos==null?"—":r.pattern.close_pos.toFixed(2)}</td>
-                    <td className="mono">{r.pattern.vol_ratio==null?"—":r.pattern.vol_ratio.toFixed(2)+"x"}</td>
-                    <td className="mono fw-700">{r.leadership_score.toFixed(0)}</td>
-                  </tr>
                 ))}
               </tbody>
             </table>
